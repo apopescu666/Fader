@@ -10,6 +10,11 @@
 
 ## Test fixtures
 
-Audio and artwork test fixture provenance is still being reviewed. Test fixtures
-have not been included in the initial repository uploads. This note does not
-establish rights to any assets that have not yet been reviewed.
+The publication fixtures were replaced with synthetic data on November 2, 2026.
+All audio is a locally generated 440 Hz sine wave lasting 0.3 seconds. Artwork
+is a programmatically generated two-color checkerboard. No user music or album
+artwork is included. The test playlist references synthetic fixture files only.
+
+See Tests/FIXTURES.md and Tests/generate-fixtures.py for details and regeneration.
+The synthetic fixtures and generator are provided under the project MIT license.
+The original build 57 installation and source archives remain unchanged.
