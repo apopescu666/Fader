@@ -1,0 +1,4 @@
+Sources/FaderApp.swift
+Sources/UI/FaderAccentNativeSplit.swift
+Sources/UI/FaderLayoutMemory.swift
+Sources/UI/FaderWindowSizing.swift
