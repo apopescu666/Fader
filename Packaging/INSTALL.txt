@@ -1,0 +1,10 @@
+Fader 1.02 — Build 69
+Apple Silicon • macOS 14 or later
+
+Quit Fader with Cmd+Q. Drag Fader.app into Applications and replace the older app if needed. Launch from Applications.
+
+This package contains no personal music, library, playlists, caches, or playback history. Normal Fader 1.0 data is retained on update; experimental test profiles are separate. Back up existing Fader data before updating.
+
+Ad-hoc signed; not notarized by Apple. If macOS blocks first launch, review System Settings > Privacy & Security and allow it only if you trust the source.
+
+Installation does not change the default audio player.
