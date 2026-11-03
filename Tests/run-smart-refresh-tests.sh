@@ -17,7 +17,7 @@ s=s[:a]+'''    private static var directory: URL {
 '''+s[b:]
 Path(sys.argv[1], 'FolderCacheStore.swift').write_text(s)
 PY
-swiftc -O -warnings-as-errors -module-cache-path "$PWD/.build/ModuleCache" \
+swiftc -D FADER_TESTING Sources/Services/FaderStorage.swift -O -warnings-as-errors -module-cache-path "$PWD/.build/ModuleCache" \
   -framework SwiftUI -framework AVFoundation -framework ImageIO -framework UniformTypeIdentifiers \
   Sources/Models/Track.swift Sources/Services/Library.swift Sources/Services/FLACArtworkReader.swift \
   Sources/Services/FaderDedupTrackArtworkStore.swift Sources/Services/FaderDedupExperimentalReader.swift \
