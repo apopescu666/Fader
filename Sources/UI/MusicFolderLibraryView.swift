@@ -11,13 +11,13 @@ private struct FaderPlaylist: Codable, Identifiable {
 
 struct MusicFolderLibraryView: View {
     @EnvironmentObject var player: Player
-    @AppStorage("Fader.appearance.useSystemAccent") private var selectionUseSystemAccent = true
-    @AppStorage("Fader.appearance.accentHex") private var selectionAccentHex = "#4B8DF8"
+    @AppStorage("Fader.appearance.useSystemAccent", store: FaderStorage.defaults) private var selectionUseSystemAccent = true
+    @AppStorage("Fader.appearance.accentHex", store: FaderStorage.defaults) private var selectionAccentHex = "#4B8DF8"
     private var selectionAccent: Color {
         selectionUseSystemAccent ? Color.accentColor : FaderAccentColor.fromHex(selectionAccentHex)
     }
     @Binding var showSidebar: Bool
-    @AppStorage("Fader.premium.showQueuePanel") private var showQueuePanel = true
+    @AppStorage("Fader.premium.showQueuePanel", store: FaderStorage.defaults) private var showQueuePanel = true
 
     @State private var libraryStartupComplete = false
     @State private var folders: [URL] = []
@@ -29,6 +29,8 @@ struct MusicFolderLibraryView: View {
     @State private var selectedFolderTrackPaths: Set<String> = []
     @State private var folderSelectionAnchorPath: String? = nil
     @State private var isLoading = false
+    @State private var initialImportProgress: FaderInitialFolderImport.Progress?
+    @State private var initialImportError: String?
     @State private var folderPendingRemoval: URL? = nil
 
     @State private var playlists: [FaderPlaylist] = []
@@ -287,6 +289,12 @@ struct MusicFolderLibraryView: View {
                 ? "Imported \(importedCount) playlist(s)."
                 : "No new playlist imported (empty or already present)."
         }
+        .onReceive(NotificationCenter.default.publisher(for: .faderShowCurrentQueue)) { _ in
+            globalSearchSelected = false
+            globalSearchText = ""
+            selectedFolder = nil
+            selectedPlaylistID = nil
+        }
         .onAppear { initializeLibraryIfReady() }
         .onChange(of: player.isRestoringSession) { _, loading in
             if !loading { initializeLibraryIfReady() }
@@ -313,12 +321,12 @@ struct MusicFolderLibraryView: View {
         }
         .onChange(of: selectedFolder) { _, newValue in
             if let path = newValue {
-                UserDefaults.standard.set(
+                FaderStorage.defaults.set(
                     path,
                     forKey: "Fader.lastSelectedFolder"
                 )
             } else {
-                UserDefaults.standard.removeObject(
+                FaderStorage.defaults.removeObject(
                     forKey: "Fader.lastSelectedFolder"
                 )
             }
@@ -449,7 +457,7 @@ struct MusicFolderLibraryView: View {
             Button {
                 globalSearchSelected = false
                 selectedPlaylistID = nil
-                UserDefaults.standard.removeObject(forKey: lastPlaylistKey)
+                FaderStorage.defaults.removeObject(forKey: lastPlaylistKey)
                 selectedFolder = nil
             } label: {
                 Label("Current Queue", systemImage: "music.note.list")
@@ -605,7 +613,7 @@ struct MusicFolderLibraryView: View {
             for: .applicationSupportDirectory,
             in: .userDomainMask
         )[0]
-        .appendingPathComponent("FaderPlayer", isDirectory: true)
+        .appendingPathComponent(FaderStorage.supportComponent, isDirectory: true)
     }
 
     private var playlistSafetyURL: URL {
@@ -626,7 +634,7 @@ struct MusicFolderLibraryView: View {
     }
 
     private func loadPlaylists() {
-        let defaults = UserDefaults.standard
+        let defaults = FaderStorage.defaults
 
         let sources: [(String, Data?)] = [
             ("UserDefaults", defaults.data(forKey: playlistStorageKey)),
@@ -673,7 +681,7 @@ struct MusicFolderLibraryView: View {
             // Preserve the previous valid version.
             let previousData =
                 (try? Data(contentsOf: playlistSafetyURL))
-                ?? UserDefaults.standard.data(
+                ?? FaderStorage.defaults.data(
                     forKey: playlistStorageKey
                 )
 
@@ -691,7 +699,7 @@ struct MusicFolderLibraryView: View {
                 options: .atomic
             )
 
-            UserDefaults.standard.set(
+            FaderStorage.defaults.set(
                 data,
                 forKey: playlistStorageKey
             )
@@ -701,7 +709,7 @@ struct MusicFolderLibraryView: View {
 
             // Keep the existing persistence mechanism operational.
             if let data = try? JSONEncoder().encode(playlists) {
-                UserDefaults.standard.set(
+                FaderStorage.defaults.set(
                     data,
                     forKey: playlistStorageKey
                 )
@@ -745,7 +753,7 @@ struct MusicFolderLibraryView: View {
         // Leave search before routing to the actual playing source.
         globalSearchSelected = false
 
-        let defaults = UserDefaults.standard
+        let defaults = FaderStorage.defaults
         let kind = defaults.string(forKey: "Fader.playingSourceKind") ?? ""
         let identifier = defaults.string(forKey: "Fader.playingSourceID") ?? ""
 
@@ -753,7 +761,7 @@ struct MusicFolderLibraryView: View {
             // The actual playback mode takes precedence over stale saved labels.
             selectedPlaylistID = nil
             selectedFolder = nil
-            UserDefaults.standard.removeObject(forKey: lastPlaylistKey)
+            FaderStorage.defaults.removeObject(forKey: lastPlaylistKey)
             return
         }
 
@@ -775,7 +783,7 @@ struct MusicFolderLibraryView: View {
                 return
             }
             selectedPlaylistID = nil
-            UserDefaults.standard.removeObject(forKey: lastPlaylistKey)
+            FaderStorage.defaults.removeObject(forKey: lastPlaylistKey)
             selectFolder(folder)
 
         default:
@@ -790,7 +798,7 @@ struct MusicFolderLibraryView: View {
         playlistSearchText = ""
         selectedPlaylistID = playlist.id
 
-        UserDefaults.standard.set(
+        FaderStorage.defaults.set(
             playlist.id.uuidString,
             forKey: lastPlaylistKey
         )
@@ -801,7 +809,7 @@ struct MusicFolderLibraryView: View {
 
         if selectedPlaylistID == playlist.id {
             selectedPlaylistID = nil
-            UserDefaults.standard.removeObject(forKey: lastPlaylistKey)
+            FaderStorage.defaults.removeObject(forKey: lastPlaylistKey)
         }
 
         playlistPendingRemoval = nil
@@ -889,14 +897,14 @@ struct MusicFolderLibraryView: View {
             preloadPlaylistMetadataFromCache()
             loadGlobalSearchIndex()
 
-            if let savedID = UserDefaults.standard.string(
+            if let savedID = FaderStorage.defaults.string(
                 forKey: lastPlaylistKey
             ),
             let id = UUID(uuidString: savedID),
             playlists.contains(where: { $0.id == id }) {
                 selectedPlaylistID = id
                 selectedFolder = nil
-            } else if let savedPath = UserDefaults.standard.string(
+            } else if let savedPath = FaderStorage.defaults.string(
                 forKey: "Fader.lastSelectedFolder"
             ),
             let savedFolder = folders.first(where: {
@@ -904,6 +912,7 @@ struct MusicFolderLibraryView: View {
             }) {
                 selectFolder(savedFolder)
             }
+            loadRemainingFoldersInBackground()
     }
 
     // MARK: - FADER_GLOBAL_SEARCH_SAFE_P21_V1
@@ -1312,7 +1321,7 @@ struct MusicFolderLibraryView: View {
         goToSongPlaylistID = nil
         folderSearchText = "" // Ensure the destination song isn't filtered out.
         selectedPlaylistID = nil
-        UserDefaults.standard.removeObject(forKey: lastPlaylistKey)
+        FaderStorage.defaults.removeObject(forKey: lastPlaylistKey)
         selectedFolderTrackPaths = [path]
         folderSelectionAnchorPath = path
         selectFolder(folder) // Existing method loads cached tracks in background.
@@ -1676,9 +1685,9 @@ struct MusicFolderLibraryView: View {
         name: String,
         identifier: String
     ) {
-        UserDefaults.standard.set(kind, forKey: "Fader.playingSourceKind")
-        UserDefaults.standard.set(name, forKey: "Fader.playingSourceName")
-        UserDefaults.standard.set(identifier, forKey: "Fader.playingSourceID")
+        FaderStorage.defaults.set(kind, forKey: "Fader.playingSourceKind")
+        FaderStorage.defaults.set(name, forKey: "Fader.playingSourceName")
+        FaderStorage.defaults.set(identifier, forKey: "Fader.playingSourceID")
     }
 
     private func playPlaylist(
@@ -1928,6 +1937,14 @@ struct MusicFolderLibraryView: View {
                             maxWidth: .infinity,
                             maxHeight: .infinity
                         )
+                        // Empty playlists have no native table to register a drop target.
+                        // Make the ENTIRE central empty area receive the existing import
+                        // handlers, including Finder and Fader's internal track payloads.
+                        .contentShape(Rectangle())
+                        .onDrop(of: ["public.file-url", "public.utf8-plain-text", "public.plain-text"],
+                                isTargeted: nil) { providers in
+                            acceptPlaylistTrackDrop(providers, into: id)
+                        }
                     } else {
                         // FADER_PLAYLIST_PERFORMANCE_P09_V1
                         // Calculate active song once, not for every row.
@@ -2527,7 +2544,7 @@ struct MusicFolderLibraryView: View {
         HStack(spacing: 12) {
             Button {
                 selectedPlaylistID = nil
-                UserDefaults.standard.removeObject(forKey: lastPlaylistKey)
+                FaderStorage.defaults.removeObject(forKey: lastPlaylistKey)
                 selectFolder(folder)
             } label: {
                 Label(folder.lastPathComponent, systemImage: "folder")
@@ -2892,7 +2909,14 @@ struct MusicFolderLibraryView: View {
             if isLoading {
                 VStack {
                     Spacer()
-                    ProgressView("Scanning music folder...")
+                    if let progress = initialImportProgress, progress.total > 0 {
+                        ProgressView(value: Double(progress.completed), total: Double(progress.total))
+                            .frame(maxWidth: 280)
+                        Text("Reading songs: \(progress.completed) / \(progress.total)")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ProgressView("Finding audio files...")
+                    }
                     Spacer()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -2902,7 +2926,7 @@ struct MusicFolderLibraryView: View {
                     "No Audio Files",
                     systemImage: "music.note",
                     description: Text(
-                        "The folder is empty or unavailable."
+                        initialImportError ?? "The folder is empty or unavailable."
                     )
                 )
 
@@ -3112,7 +3136,7 @@ struct MusicFolderLibraryView: View {
                         added += 1
                     }
                 }
-                if added > 0 { saveFolders() }
+                if added > 0 { saveFolders(); loadRemainingFoldersInBackground() }
                 player.status = directories.isEmpty
                     ? "Drop folders here (audio files go to Current Queue)."
                     : "Added \(added) music folder(s)."
@@ -3150,19 +3174,39 @@ struct MusicFolderLibraryView: View {
         selectedFolder = path
         // FADER_P29134A_SELECTED_FOLDER_PRIORITY
         FolderCacheStore.preferSelectedFolder(url)
+        FaderImportScheduler.shared.prefer(url)
+        loadInitialFolder(url)
+        loadRemainingFoldersInBackground()
+    }
+
+    private func loadRemainingFoldersInBackground() {
+        for folder in folders where folderCache[folder.path] == nil && !scanningFolders.contains(folder.path) {
+            loadInitialFolder(folder)
+        }
+    }
+
+    private func loadInitialFolder(_ url: URL) {
+        let path = url.path
+        guard folders.contains(where: { $0.path == path }) else { return }
 
         // FADER_P29132_FOLDER_LOAD_DIAGNOSTICS
         let selectedAt = ProcessInfo.processInfo.systemUptime
         // Reuse tracks already loaded for this folder.
         if let cached = folderCache[path] {
-            folderTracks = cached
-            isLoading = false
+            if selectedFolder == path {
+                folderTracks = cached
+                isLoading = false
+            }
             print(String(format: "FADER PERF FOLDER UI: source=memory tracks=%d assign=%.0fms name=%@", cached.count, (ProcessInfo.processInfo.systemUptime-selectedAt)*1000, url.lastPathComponent))
             return
         }
 
-        folderTracks = []
-        isLoading = true
+        if selectedFolder == path {
+            folderTracks = []
+            initialImportProgress = nil
+            initialImportError = nil
+            isLoading = true
+        }
 
         // Avoid starting a second scan while one is running.
         if scanningFolders.contains(path) {
@@ -3179,8 +3223,32 @@ struct MusicFolderLibraryView: View {
             let saved = FolderCacheStore.loadDedupAutonomous(for: url)
                 ?? FolderCacheStore.load(for: url)
 
-            // Legacy JSON fallback and audio scanning behavior are unchanged.
-            let tracks = saved ?? Library.scan(folder: url)
+            let tracks: [Track]
+            do {
+                if let saved = saved {
+                    tracks = saved
+                    FaderStorage.log("CACHE HIT tracks=\(saved.count) folder=\(url.lastPathComponent)")
+                } else {
+                    tracks = try FaderInitialFolderImport.scan(folder: url) { progress in
+                        DispatchQueue.main.async {
+                            guard selectedFolder == path else { return }
+                            if progress.completed >= (initialImportProgress?.completed ?? 0) {
+                                initialImportProgress = progress
+                            }
+                        }
+                    }
+                }
+            } catch {
+                FaderStorage.log("IMPORT FAILED (no cache saved): " + error.localizedDescription)
+                DispatchQueue.main.async {
+                    scanningFolders.remove(path)
+                    if selectedFolder == path {
+                        isLoading = false
+                        initialImportError = "Import stopped: " + error.localizedDescription
+                    }
+                }
+                return
+            }
             let readyAt = ProcessInfo.processInfo.systemUptime
 
             DispatchQueue.main.async {
@@ -3523,14 +3591,14 @@ struct MusicFolderLibraryView: View {
     }
 
     private func saveFolders() {
-        UserDefaults.standard.set(
+        FaderStorage.defaults.set(
             folders.map(\.path),
             forKey: storageKey
         )
     }
 
     private func restoreFolders() {
-        let paths = UserDefaults.standard.stringArray(
+        let paths = FaderStorage.defaults.stringArray(
             forKey: storageKey
         ) ?? []
 
@@ -3549,8 +3617,8 @@ private struct FaderPremiumQueuePreview: View {
     let playlistTracks: (UUID) -> [Track]
     let playPlaylistAt: (UUID, Int) -> Void
     @EnvironmentObject var player: Player
-    @AppStorage("Fader.playingSourceName") private var playingSourceName = ""
-    @AppStorage("Fader.playingSourceKind") private var playingSourceKind = ""
+    @AppStorage("Fader.playingSourceName", store: FaderStorage.defaults) private var playingSourceName = ""
+    @AppStorage("Fader.playingSourceKind", store: FaderStorage.defaults) private var playingSourceKind = ""
     @State private var selectedMode = 0
     @State private var localQuery = ""
     @State private var showInteractionHelp = false
@@ -3564,8 +3632,8 @@ private struct FaderPremiumQueuePreview: View {
     // Folder playback is read-only; Current Queue uses its existing drop handler.
     private var playingPlaylistID: UUID? {
         guard selectedMode == 0, !player.isFinderPlayback, player.isFolderPlayback,
-              UserDefaults.standard.string(forKey: "Fader.playingSourceKind") == "playlist",
-              let rawID = UserDefaults.standard.string(forKey: "Fader.playingSourceID")
+              FaderStorage.defaults.string(forKey: "Fader.playingSourceKind") == "playlist",
+              let rawID = FaderStorage.defaults.string(forKey: "Fader.playingSourceID")
         else { return nil }
         return UUID(uuidString: rawID)
     }

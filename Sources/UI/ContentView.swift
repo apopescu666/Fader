@@ -4,9 +4,9 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @EnvironmentObject var player: Player
     // FADER_UI_V1_APPEARANCE_STAGE1 — presentation preferences only.
-    @AppStorage("Fader.appearance.mode") private var appearanceMode = "system"
-    @AppStorage("Fader.appearance.useSystemAccent") private var useSystemAccent = true
-    @AppStorage("Fader.appearance.accentHex") private var accentHex = "#4B8DF8"
+    @AppStorage("Fader.appearance.mode", store: FaderStorage.defaults) private var appearanceMode = "system"
+    @AppStorage("Fader.appearance.useSystemAccent", store: FaderStorage.defaults) private var useSystemAccent = true
+    @AppStorage("Fader.appearance.accentHex", store: FaderStorage.defaults) private var accentHex = "#4B8DF8"
     private var faderAccent: Color {
         useSystemAccent ? Color.accentColor : FaderAccentColor.fromHex(accentHex)
     }
@@ -19,9 +19,11 @@ struct ContentView: View {
         }
     }
 
-    @AppStorage("Fader.premium.showQueuePanel") private var showQueuePanel = true
+    @AppStorage("Fader.premium.showQueuePanel", store: FaderStorage.defaults) private var showQueuePanel = true
     @State private var isDropTargeted = false
-    @AppStorage("Fader.showSidebar")
+    @State private var volumeAdjustmentVisible = false
+    @Environment(\.accessibilityReduceMotion) private var reduceVolumeMotion
+    @AppStorage("Fader.showSidebar", store: FaderStorage.defaults)
     private var showSidebar = true
 
     var body: some View {
@@ -137,21 +139,38 @@ struct ContentView: View {
                     Button {
                         player.toggleMute()
                     } label: {
-                        Image(systemName: player.isMuted ? "speaker.slash.fill" : "speaker.fill")
+                        Image(systemName: player.isMuted ? "speaker.slash.fill" : "speaker.wave.3.fill",
+                              variableValue: min(1, max(0, Double(player.volume))))
+                            .symbolRenderingMode(.hierarchical)
+                            .animation(reduceVolumeMotion ? nil : .easeOut(duration: 0.16), value: player.volume)
                             .font(.system(size: 20, weight: .semibold))
                             .foregroundStyle(player.isMuted ? Color.secondary : faderAccent)
+                            .background {
+                                Circle()
+                                    .fill(faderAccent.opacity(volumeAdjustmentVisible ? 0.14 : 0))
+                                    .frame(width: 36, height: 36)
+                                    .scaleEffect(volumeAdjustmentVisible ? 1 : 0.85)
+                                    .animation(reduceVolumeMotion ? nil : .easeOut(duration: 0.20), value: volumeAdjustmentVisible)
+                                    .allowsHitTesting(false)
+                            }
                             .frame(width: 72, height: 30, alignment: .center)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .help(player.isMuted ? "Unmute" : "Mute")
-                    Slider(value: .init(
+                    FaderVolumeSlider(value: .init(
                         get: { Double(player.volume) },
                         set: { player.setVolume(Float($0)) }
-                    ), in: 0...1)
+                    ), accent: NSColor(faderAccent), onAdjustment: { active in
+                        volumeAdjustmentVisible = active
+                    })
                     .tint(useSystemAccent ? Color.accentColor : FaderAccentColor.fromHex(accentHex))
-                    .frame(width: 140)
-                    Color.clear.frame(width: 42, height: 1)
+                    .frame(width: 140, height: 24)
+                    Text("\(Int((min(1, max(0, Double(player.volume))) * 100).rounded()))%")
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .frame(width: 42, alignment: .leading)
                 }
             }
             .frame(width: 290, alignment: .center)

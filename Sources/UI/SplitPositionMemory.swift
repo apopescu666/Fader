@@ -107,11 +107,11 @@ struct SplitPositionMemory: NSViewRepresentable {
                 return
             }
 
-            guard UserDefaults.standard.object(forKey: name) != nil
+            guard FaderStorage.defaults.object(forKey: name) != nil
             else { return }
 
             let saved = CGFloat(
-                UserDefaults.standard.double(forKey: name)
+                FaderStorage.defaults.double(forKey: name)
             )
 
             let desired = min(max(saved, minimum), maximum)
@@ -168,7 +168,7 @@ struct SplitPositionMemory: NSViewRepresentable {
                 return
             }
 
-            UserDefaults.standard.set(
+            FaderStorage.defaults.set(
                 Double(position),
                 forKey: name
             )

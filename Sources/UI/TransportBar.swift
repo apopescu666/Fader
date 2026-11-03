@@ -1,14 +1,18 @@
 import SwiftUI
 
 struct TransportBar: View {
-    @AppStorage("Fader.appearance.useSystemAccent") private var useSystemAccent = true
-    @AppStorage("Fader.appearance.accentHex") private var accentHex = "#4B8DF8"
+    var showsShuffle = true
+    @AppStorage("Fader.appearance.useSystemAccent", store: FaderStorage.defaults) private var useSystemAccent = true
+    @AppStorage("Fader.appearance.accentHex", store: FaderStorage.defaults) private var accentHex = "#4B8DF8"
     private var faderAccent: Color {
         useSystemAccent ? Color.accentColor : FaderAccentColor.fromHex(accentHex)
     }
     @EnvironmentObject var player: Player
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isDragging = false
     @State private var temporaryPosition: Double = 0
+    @State private var seekVisualHoldUntil: TimeInterval = 0
+    @State private var seekVisualTrackPath: String?
 
     // FADER_TRANSPORT_REFRESH_V5
     @State private var displayedElapsed: Double = 0
@@ -22,10 +26,12 @@ struct TransportBar: View {
             HStack(spacing: 0) {
                 Spacer(minLength: 0)
                 HStack(spacing: 20) {
+                if showsShuffle {
                 Image(systemName: "shuffle")
                     .foregroundStyle(player.shuffle ? faderAccent : Color.secondary)
                     .help("Shuffle \(player.shuffle ? "on" : "off")")
                     .onTapGesture { player.toggleShuffle() }
+                }
 
                 Button { player.previous() } label: {
                     Image(systemName: "backward.end.fill")
@@ -69,44 +75,55 @@ struct TransportBar: View {
 
                         Capsule()
                             .fill(player.isCrossfading ? Color.green : faderAccent)
-                            .frame(width: max(0, geo.size.width * displayedProgress))
+                            .frame(width: max(0, geo.size.width * (isDragging ? temporaryPosition : displayedProgress)))
                             .frame(height: 6)
 
-                        // Visual indicator for drag position
-                        if isDragging {
-                            Capsule()
-                                .fill(Color.white.opacity(0.7))
-                                .frame(width: 4, height: 12)
-                                .offset(x: max(0, min(geo.size.width, geo.size.width * temporaryPosition)))
-                        }
+                        // Position marker uses the existing 10 Hz progress updates.
+                        // Presentation only: no extra timer or audio-engine work.
+                        let markerProgress = isDragging ? temporaryPosition : displayedProgress
+                        let markerX = max(0, min(max(0, geo.size.width - 18), geo.size.width * markerProgress - 9))
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(faderAccent)
+                            .padding(.horizontal, 1)
+                            .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 3))
+                            .frame(width: 18, height: 20)
+                            .offset(x: markerX)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
 
                         // Interactive area - tap to seek and drag for scrubbing
                         Rectangle()
                             .fill(.clear)
                             .contentShape(Rectangle())
-                            .onTapGesture { location in
-                                if let track = player.currentTrack {
-                                    let progress = max(0, min(1, (location.x / geo.size.width)))
-                                    let targetTime = progress * track.duration
-                                    player.seek(to: targetTime)
-                                }
-                            }
-                            .simultaneousGesture(
+                            .gesture(
                                 DragGesture(minimumDistance: 0)
                                     .onChanged { value in
-                                        if player.currentTrack != nil {
-                                            let progress = max(0, min(1, (value.location.x / geo.size.width)))
-                                            temporaryPosition = progress
+                                        guard player.currentTrack != nil, geo.size.width > 0 else { return }
+                                        // A click must not first teleport the marker as a zero-distance drag.
+                                        if isDragging || abs(value.translation.width) > 3 || abs(value.translation.height) > 3 {
+                                            temporaryPosition = max(0, min(1, value.location.x / geo.size.width))
                                             isDragging = true
                                         }
                                     }
                                     .onEnded { value in
-                                        if let track = player.currentTrack {
-                                            let progress = max(0, min(1, (value.location.x / geo.size.width)))
-                                            let targetTime = progress * track.duration
-                                            player.seek(to: targetTime)
+                                        guard let track = player.currentTrack, geo.size.width > 0 else {
+                                            isDragging = false
+                                            return
+                                        }
+                                        let target = max(0, min(1, value.location.x / geo.size.width))
+                                        let wasDragging = isDragging
+                                        seekVisualTrackPath = track.normalizedPath
+                                        seekVisualHoldUntil = ProcessInfo.processInfo.systemUptime + 0.25
+                                        // Publish the destination BEFORE ending the drag. Never reveal the
+                                        // stale progress snapshot while the player's UI values catch up.
+                                        withAnimation(reduceMotion || wasDragging ? nil : .easeOut(duration: 0.22)) {
+                                            displayedProgress = target
+                                            displayedElapsed = target * track.duration
+                                            temporaryPosition = target
                                             isDragging = false
                                         }
+                                        player.seek(to: target * track.duration)
                                     }
                             )
                     }
@@ -138,15 +155,19 @@ struct TransportBar: View {
     }
 
     private func refreshDisplayedProgress() {
+        guard !isDragging else { return }
+        if seekVisualTrackPath == player.currentTrack?.normalizedPath,
+           ProcessInfo.processInfo.systemUptime < seekVisualHoldUntil { return }
         let newElapsed = player.elapsed
         let newProgress = player.progress
-
         if displayedElapsed != newElapsed {
             displayedElapsed = newElapsed
         }
 
         if displayedProgress != newProgress {
-            displayedProgress = newProgress
+            withAnimation(reduceMotion ? nil : .linear(duration: 0.10)) {
+                displayedProgress = newProgress
+            }
         }
     }
 }

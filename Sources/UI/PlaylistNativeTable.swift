@@ -358,8 +358,8 @@ struct PlaylistNativeTable: NSViewRepresentable {
 // FADER_PLAYLIST_VISUAL_FOLLOW_V2
 // Folder-inspired appearance; native playlist drag/drop is preserved.
 private struct PlaylistSongCellContent: View {
-    @AppStorage("Fader.appearance.useSystemAccent") private var useSystemAccent = true
-    @AppStorage("Fader.appearance.accentHex") private var accentHex = "#4B8DF8"
+    @AppStorage("Fader.appearance.useSystemAccent", store: FaderStorage.defaults) private var useSystemAccent = true
+    @AppStorage("Fader.appearance.accentHex", store: FaderStorage.defaults) private var accentHex = "#4B8DF8"
     private var faderAccent: Color {
         useSystemAccent ? Color.accentColor : FaderAccentColor.fromHex(accentHex)
     }
