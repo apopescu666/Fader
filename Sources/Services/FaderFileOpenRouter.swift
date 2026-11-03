@@ -17,6 +17,14 @@ final class FaderFileOpenRouter {
 }
 
 final class FaderFileOpenDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NotificationCenter.default.post(name: .faderFinishedLaunching, object: nil)
+    }
+    func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool { false }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        NotificationCenter.default.post(name: .faderReopen, object: nil)
+        return false
+    }
     func application(_ sender: NSApplication, openFile filename: String) -> Bool {
         FaderFileOpenRouter.shared.receive([URL(fileURLWithPath: filename, isDirectory: false)])
         return true
@@ -29,3 +37,10 @@ final class FaderFileOpenDelegate: NSObject, NSApplicationDelegate {
         sender.reply(toOpenOrPrint: .success)
     }
 }
+
+extension Notification.Name {
+    static let faderFinishedLaunching = Notification.Name("Fader.finishedLaunching")
+    static let faderReopen = Notification.Name("Fader.reopen")
+    static let faderShowCurrentQueue = Notification.Name("Fader.showCurrentQueue")
+}
+
