@@ -63,8 +63,8 @@ struct PlaylistView: View {
     var onAddFolder: (() -> Void)? = nil
 
     @EnvironmentObject var player: Player
-    @AppStorage("Fader.appearance.useSystemAccent") private var selectionUseSystemAccent = true
-    @AppStorage("Fader.appearance.accentHex") private var selectionAccentHex = "#4B8DF8"
+    @AppStorage("Fader.appearance.useSystemAccent", store: FaderStorage.defaults) private var selectionUseSystemAccent = true
+    @AppStorage("Fader.appearance.accentHex", store: FaderStorage.defaults) private var selectionAccentHex = "#4B8DF8"
     private var selectionAccent: Color {
         selectionUseSystemAccent ? Color.accentColor : FaderAccentColor.fromHex(selectionAccentHex)
     }

@@ -4,7 +4,7 @@ struct NowPlayingView: View {
     @EnvironmentObject var player: Player
 
     // FADER_PLAYING_SOURCE_P07_V1
-    @AppStorage("Fader.playingSourceName")
+    @AppStorage("Fader.playingSourceName", store: FaderStorage.defaults)
     private var playingSourceName = ""
 
 

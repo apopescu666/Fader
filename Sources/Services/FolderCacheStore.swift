@@ -60,7 +60,7 @@ enum FolderCacheStore {
         )[0]
 
         return support
-            .appendingPathComponent("FaderPlayer", isDirectory: true)
+            .appendingPathComponent(FaderStorage.supportComponent, isDirectory: true)
             .appendingPathComponent("FolderCache", isDirectory: true)
     }
 

@@ -10,7 +10,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 SOURCES=()
 while IFS= read -r -d '' source; do SOURCES+=("$source"); done < <(find Sources -name '*.swift' -type f -print0)
 mkdir -p "$PWD/.build/ModuleCache"
-echo "Compiling Fader 1.0 for $ARCH (macOS 14+)"
+echo "Compiling Fader 1.02 Build69 for $ARCH (macOS 14+)"
 swiftc -O -warnings-as-errors -target "$ARCH-apple-macos14.0" \
   -module-cache-path "$PWD/.build/ModuleCache" \
   -framework SwiftUI -framework AppKit -framework AVFoundation \
@@ -19,7 +19,7 @@ swiftc -O -warnings-as-errors -target "$ARCH-apple-macos14.0" \
 mkdir -p "$APP/Contents/Helpers"
 swiftc -O -warnings-as-errors -target "$ARCH-apple-macos14.0" \
   -module-cache-path "$PWD/.build/ModuleCache" -framework SwiftUI \
-  Sources/Models/Track.swift Sources/Services/PlaybackSessionStore.swift \
+  Sources/Services/FaderStorage.swift Sources/Models/Track.swift Sources/Services/PlaybackSessionStore.swift \
   Sources/Services/FaderCompactSessionStore.swift Sources/Services/FaderCoalescingWriter.swift \
   Sources/Services/FaderDedupTrackArtworkStore.swift Sources/Services/FaderDedupExperimentalReader.swift \
   Tools/FaderPrepareSession.swift -o "$APP/Contents/Helpers/FaderPrepareSession"
@@ -32,8 +32,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleDisplayName</key><string>Fader</string>
 <key>CFBundleExecutable</key><string>Fader</string>
 <key>CFBundleIdentifier</key><string>com.fader.player</string>
-<key>CFBundleVersion</key><string>57</string>
-<key>CFBundleShortVersionString</key><string>1.0</string>
+<key>CFBundleVersion</key><string>69</string>
+<key>CFBundleShortVersionString</key><string>1.02</string>
 <key>CFBundleIconFile</key><string>FaderIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
@@ -70,4 +70,4 @@ if [ -e Fader.app ]; then
   echo "Previous build preserved: $PREVIOUS"
 fi
 ditto "$APP" Fader.app
-echo "Built Fader.app — no compiler warnings. Drag it to Applications to install."
+echo "Built Fader.app — no compiler warnings. Build 69. Building does not install into Applications."

@@ -2,52 +2,52 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
+#if !FADER_PRESENTATION_TESTING
 @main
+#endif
 struct FaderApp: App {
     @NSApplicationDelegateAdaptor(FaderFileOpenDelegate.self) private var fileOpenDelegate
-    @StateObject private var player = Player()
+    @StateObject private var player: Player
+    @StateObject private var presentation: FaderPresentationController
+
+    init() {
+        let player = Player(deferSessionRestoration: true)
+        _player = StateObject(wrappedValue: player)
+        _presentation = StateObject(wrappedValue: FaderPresentationController(player: player))
+    }
     // FADER_UI_V1_STAGE6B: same preference used by ContentView.
-    @AppStorage("Fader.showSidebar") private var showSidebar = true
+    @AppStorage("Fader.showSidebar", store: FaderStorage.defaults) private var showSidebar = true
 
     var body: some Scene {
-        WindowGroup("Fader — Music Player") {
-            ContentView()
-                .environmentObject(player)
-                .frame(minWidth: 900, minHeight: 480)
-                .background(FaderWindowSizing().frame(width: 1, height: 1).allowsHitTesting(false))
-                .onAppear {
-                    FaderFileOpenRouter.shared.install { urls in player.openFinderFiles(urls) }
-                    // STAGE8_NATIVE_ACCENT: selection and controls follow macOS.
-                    UserDefaults.standard.set(true, forKey: "Fader.appearance.useSystemAccent")
-                    // Make sure the window comes to the front even when
-                    // launched from Finder or a terminal.
-                    NSApp.setActivationPolicy(.regular)
-                    NSApp.activate(ignoringOtherApps: true)
-                    // Hide the top-level Edit menu, leaving its native commands intact.
-                    // Defer until SwiftUI has installed the application menu bar.
-                    DispatchQueue.main.async {
-                        if let edit = NSApp.mainMenu?.items.first(where: { $0.title == "Edit" }) {
-                            edit.isHidden = true
-                        }
-                    }
-                }
-        }
-        .defaultSize(width: 1200, height: 760)
-        .windowResizability(.contentMinSize)
         Settings {
             FaderAppearanceSettings()
         }
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("Open Audio Files…") { openAudioFiles() }
+                Button("Open Audio Files…") {
+                    if presentation.isLite { presentation.chooseTracks() }
+                    else { openAudioFiles() }
+                }
                     .keyboardShortcut("o", modifiers: .command)
                     .disabled(player.isRestoringSession)
                 Divider()
-                Button("Open Folder…") { open(directoriesOnly: true) }
+                Button("Open Folder…") {
+                    if presentation.isLite { presentation.chooseTracks() }
+                    else {
+                        presentation.showFull()
+                        presentation.withRestoredSession { open(directoriesOnly: true) }
+                    }
+                }
                     .keyboardShortcut("o", modifiers: [.command, .shift])
                     .disabled(player.isRestoringSession)
                 Divider()
-                Button("Open Playlist…") { open(directoriesOnly: false) }
+                Button("Open Playlist…") {
+                    if presentation.isLite { presentation.chooseTracks() }
+                    else {
+                        presentation.showFull()
+                        presentation.withRestoredSession { open(directoriesOnly: false) }
+                    }
+                }
                     .keyboardShortcut("p", modifiers: [.command, .shift])
                     .disabled(player.isRestoringSession)
             }
@@ -69,6 +69,9 @@ struct FaderApp: App {
             }
             // FADER_UI_V1_STAGE6B — View menu uses existing application state/actions.
             CommandMenu("View") {
+                Button("Open Fader") { presentation.showFull() }
+                Button("Fader Lite") { presentation.showLite() }
+                Divider()
                 Button(showSidebar ? "Hide Sidebar" : "Show Sidebar") {
                     showSidebar.toggle()
                 }
@@ -177,9 +180,9 @@ enum FaderAccentColor {
 // FADER_UI_V1_STAGE8 — Appearance settings presentation only.
 // Existing AppStorage keys and behavior are preserved.
 private struct FaderAppearanceSettings: View {
-    @AppStorage("Fader.appearance.mode") private var mode = "system"
-    @AppStorage("Fader.appearance.useSystemAccent") private var useSystemAccent = true
-    @AppStorage("Fader.appearance.accentHex") private var accentHex = "#4B8DF8"
+    @AppStorage("Fader.appearance.mode", store: FaderStorage.defaults) private var mode = "system"
+    @AppStorage("Fader.appearance.useSystemAccent", store: FaderStorage.defaults) private var useSystemAccent = true
+    @AppStorage("Fader.appearance.accentHex", store: FaderStorage.defaults) private var accentHex = "#4B8DF8"
 
     private var customAccent: Binding<Color> {
         Binding(

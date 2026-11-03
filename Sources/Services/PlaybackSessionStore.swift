@@ -57,7 +57,7 @@ enum PlaybackSessionStore {
             for: .applicationSupportDirectory,
             in: .userDomainMask
         )[0]
-        .appendingPathComponent("FaderPlayer", isDirectory: true)
+        .appendingPathComponent(FaderStorage.supportComponent, isDirectory: true)
         .appendingPathComponent("PlaybackSession.json")
     }
 

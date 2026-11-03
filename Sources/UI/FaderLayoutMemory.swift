@@ -5,7 +5,7 @@ import Foundation
 final class FaderLayoutMemory {
     private let defaults: UserDefaults
     private let windowKey = "Fader.layout.mainWindow.frame.v1"
-    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+    init(defaults: UserDefaults = FaderStorage.defaults) { self.defaults = defaults }
 
     func windowFrame() -> CGRect? {
         if let values = defaults.dictionary(forKey: windowKey),
