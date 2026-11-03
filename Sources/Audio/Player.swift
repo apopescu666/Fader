@@ -29,16 +29,84 @@ final class Player: ObservableObject {
     private var finderRequest = UUID()
     private var finderTransportSettingsChanged = false
 
+    private struct LiteReturnState {
+        let queue: [Track]
+        let folder: [Track]
+        let isFolder: Bool
+        let index: Int
+        let elapsed: Double
+        let shuffle: Bool
+        let repeatMode: RepeatMode
+        let source: [String: String]
+    }
+    private var liteReturnState: LiteReturnState?
+    private var liteReturnPending = false
+    private var liteSource: [String: String] = [:]
+
+    /// Capture the normal session before entering Finder-only Lite playback.
+    func beginLiteSession() {
+        guard liteReturnState == nil, !liteReturnPending else { return }
+        for key in ["Fader.playingSourceKind", "Fader.playingSourceName", "Fader.playingSourceID"] {
+            liteSource[key] = FaderStorage.defaults.string(forKey: key) ?? ""
+        }
+        if !sessionRestorationStarted || isRestoringSession {
+            liteReturnPending = true
+        } else {
+            liteReturnState = LiteReturnState(queue: queue, folder: folderPlaybackTracks,
+                isFolder: isFolderPlayback, index: isFinderPlayback ? finderBaseIndex : currentIndex,
+                elapsed: isFinderPlayback ? max(0, FaderStorage.defaults.double(forKey: "Fader.lastPlaybackPosition")) : elapsed,
+                shuffle: shuffle, repeatMode: repeatMode, source: liteSource)
+        }
+    }
+
+    func finishLiteSession() {
+        liteReturnState = nil
+        liteReturnPending = false
+    }
+
+    /// Reject queue changes while the explicitly opened Finder audio continues.
+    /// Keep saved lists/index/position separate from this temporary live source.
+    func cancelLiteTransfer() {
+        guard let saved = liteReturnState else { return }
+        let liveTracks = playbackTracks
+        let liveIndex = currentIndex
+        let hasLiveTrack = currentTrack != nil
+        let savedTracks = saved.isFolder ? saved.folder : saved.queue
+        restoringSession = true
+        if hasLiveTrack {
+            finderPlaybackTracks = liveTracks
+            isFinderPlayback = true
+            finderResumeIndex = saved.index
+            finderResumePath = savedTracks.indices.contains(saved.index) ? savedTracks[saved.index].normalizedPath : nil
+        }
+        queue = saved.queue
+        folderPlaybackTracks = saved.folder
+        isFolderPlayback = saved.isFolder
+        if hasLiveTrack {
+            currentIndex = liveIndex
+        } else {
+            currentIndex = saved.index
+            elapsed = saved.elapsed
+            progress = (currentTrack?.duration ?? 0) > 0 ? min(1, elapsed / (currentTrack?.duration ?? 1)) : 0
+        }
+        for (key, value) in saved.source { FaderStorage.defaults.set(value, forKey: key) }
+        FaderStorage.defaults.set(saved.elapsed, forKey: "Fader.lastPlaybackPosition")
+        restoringSession = false
+        finishLiteSession()
+        status = "Transfer cancelled. Saved queue unchanged; Finder playback continues."
+        persistSession()
+    }
+
     private var lastPositionSave = Date.distantPast
     private var terminationObserver: NSObjectProtocol?
 
     private let restoreURL: URL?
     private let isolatedWriter: PlaybackSessionStore.Writer?
 
-    init(sessionURL: URL? = nil) {
+    init(sessionURL: URL? = nil, deferSessionRestoration: Bool = false) {
         restoreURL = sessionURL
         isolatedWriter = sessionURL.map { PlaybackSessionStore.Writer(fileURL: $0) }
-        restoreSession()
+        if !deferSessionRestoration { beginSessionRestoration() }
 
         terminationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
@@ -57,7 +125,7 @@ final class Player: ObservableObject {
     }
 
     private func persistPosition(force: Bool = false) {
-        guard !restoringSession, !isFinderPlayback else { return }
+        guard sessionRestorationStarted, !restoringSession, !isFinderPlayback else { return }
 
         let now = Date()
         guard force ||
@@ -67,14 +135,14 @@ final class Player: ObservableObject {
 
         lastPositionSave = now
 
-        UserDefaults.standard.set(
+        FaderStorage.defaults.set(
             max(0, elapsed),
             forKey: "Fader.lastPlaybackPosition"
         )
     }
 
     private func persistSession() {
-        guard !restoringSession else { return }
+        guard sessionRestorationStarted, !restoringSession else { return }
 
         persistPosition(force: true)
 
@@ -103,6 +171,15 @@ final class Player: ObservableObject {
         else { PlaybackSessionStore.flush() }
     }
 
+    private var sessionRestorationStarted = false
+    /// Lite can play an explicit Finder file before restoring a large session.
+    /// Existing callers retain immediate restoration through the default init.
+    func beginSessionRestoration() {
+        guard !sessionRestorationStarted else { return }
+        sessionRestorationStarted = true
+        restoreSession()
+    }
+
     private func restoreSession() {
         restoringSession = true
         isRestoringSession = true
@@ -116,6 +193,11 @@ final class Player: ObservableObject {
                 self.persistSession()
             }
             guard let restored else {
+                if self.liteReturnPending {
+                    self.liteReturnState = LiteReturnState(queue: [], folder: [], isFolder: false,
+                        index: -1, elapsed: 0, shuffle: false, repeatMode: .off, source: self.liteSource)
+                    self.liteReturnPending = false
+                }
                 self.status = "Ready. Add a folder or playlist to begin."
                 return
             }
@@ -125,6 +207,16 @@ final class Player: ObservableObject {
 
     private func applyRestoredSession(_ restored: PlaybackSessionStore.RestoredSession) {
         let session = restored.session
+        if liteReturnPending {
+            let savedTracks = session.isFolderPlayback ? restored.folderTracks : restored.queue
+            let savedIndex = savedTracks.indices.contains(session.currentIndex) ? session.currentIndex : (savedTracks.isEmpty ? -1 : 0)
+            let repeatMode: RepeatMode = session.repeatMode == "one" ? .one : (session.repeatMode == "all" ? .all : .off)
+            liteReturnState = LiteReturnState(queue: restored.queue, folder: restored.folderTracks,
+                isFolder: session.isFolderPlayback, index: savedIndex,
+                elapsed: max(0, FaderStorage.defaults.double(forKey: "Fader.lastPlaybackPosition")),
+                shuffle: session.shuffle, repeatMode: repeatMode, source: liteSource)
+            liteReturnPending = false
+        }
         queue = restored.queue
         folderPlaybackTracks = restored.folderTracks
         isFolderPlayback = session.isFolderPlayback
@@ -157,7 +249,7 @@ final class Player: ObservableObject {
             status = "Previous queue restored."
             return
         }
-        let savedPosition = max(0, UserDefaults.standard.double(forKey: "Fader.lastPlaybackPosition"))
+        let savedPosition = max(0, FaderStorage.defaults.double(forKey: "Fader.lastPlaybackPosition"))
         elapsed = track.duration > 0 ? min(savedPosition, max(0, track.duration - 0.1)) : savedPosition
         progress = track.duration > 0 ? min(elapsed / track.duration, 1) : 0
         // play() already opens the audio file and seeks to elapsed when live is false.
@@ -281,9 +373,9 @@ final class Player: ObservableObject {
         currentIndex = index
         playIndex(index)
         // FADER_PLAYING_SOURCE_P07_V1
-        UserDefaults.standard.set("queue", forKey: "Fader.playingSourceKind")
-        UserDefaults.standard.set("Current Queue", forKey: "Fader.playingSourceName")
-        UserDefaults.standard.set("", forKey: "Fader.playingSourceID")
+        FaderStorage.defaults.set("queue", forKey: "Fader.playingSourceKind")
+        FaderStorage.defaults.set("Current Queue", forKey: "Fader.playingSourceName")
+        FaderStorage.defaults.set("", forKey: "Fader.playingSourceID")
     }
     @Published var currentIndex: Int = -1 {
         didSet { persistSession() }
@@ -294,18 +386,18 @@ final class Player: ObservableObject {
     var progress: Double = 0        // 0…1 within the current track
     var elapsed: Double = 0         // seconds within the current track
     @Published var volume: Float =
-        UserDefaults.standard.object(forKey: "Fader.savedVolume") == nil
+        FaderStorage.defaults.object(forKey: "Fader.savedVolume") == nil
         ? 1.0
-        : UserDefaults.standard.float(forKey: "Fader.savedVolume")
+        : FaderStorage.defaults.float(forKey: "Fader.savedVolume")
     @Published var crossfade: Double = {
-        let defaults = UserDefaults.standard
+        let defaults = FaderStorage.defaults
         guard defaults.object(forKey: "Fader.savedCrossfade") != nil else {
             return 3.0
         }
         return defaults.double(forKey: "Fader.savedCrossfade")
     }() {
         didSet {
-            UserDefaults.standard.set(
+            FaderStorage.defaults.set(
                 crossfade,
                 forKey: "Fader.savedCrossfade"
             )
@@ -323,9 +415,9 @@ final class Player: ObservableObject {
     // Mute state tracking
     @Published var isMuted = false
     private var lastVolume: Float =
-        max(0.01, UserDefaults.standard.object(forKey: "Fader.savedVolume") == nil
+        max(0.01, FaderStorage.defaults.object(forKey: "Fader.savedVolume") == nil
             ? 1.0
-            : UserDefaults.standard.float(forKey: "Fader.savedVolume"))         // Store the last non-zero volume for unmute
+            : FaderStorage.defaults.float(forKey: "Fader.savedVolume"))         // Store the last non-zero volume for unmute
 
     private let fadeDuration: Double = 1.0      // fade-in at start / fade-out at end
 
@@ -381,6 +473,42 @@ final class Player: ObservableObject {
         currentIndex = tracks.isEmpty ? -1 : 0
         progress = 0; elapsed = 0; incoming = nil
         status = tracks.isEmpty ? "Queue empty." : "\(tracks.count) tracks ready."
+    }
+
+    /// Called only after the Lite confirmation. Keep the live playback slots
+    /// and their source snapshot intact, including an in-flight crossfade.
+    func replaceQueueFromLite(_ tracks: [Track]) {
+        guard !isRestoringSession else { return }
+        if !isFolderPlayback && !isFinderPlayback && currentTrack != nil {
+            finderResumeIndex = currentIndex
+            finderResumePath = currentTrack?.normalizedPath
+            finderPlaybackTracks = queue
+            isFinderPlayback = true
+        }
+        var seen = Set<String>()
+        queue = tracks.filter { seen.insert($0.normalizedPath).inserted }
+        status = "Current Queue replaced: \(queue.count) track(s)."
+    }
+
+    /// Reassign only the list indices/source. Keep the same AVAudioPlayer slots,
+    /// position, pause state and crossfade ramp when the Lite song joins Queue.
+    func attachLitePlaybackToQueue(path: String) {
+        guard currentTrack?.normalizedPath == path,
+              let index = queue.firstIndex(where: { $0.normalizedPath == path }) else { return }
+        let previousTracks = playbackTracks
+        let outgoingPath = previousTracks.indices.contains(back.index) ? previousTracks[back.index].normalizedPath : nil
+        finderRequest = UUID()
+        isFolderPlayback = false
+        folderPlaybackTracks = []
+        isFinderPlayback = false
+        finderPlaybackTracks = []
+        currentIndex = index
+        front.index = index
+        back.index = outgoingPath.flatMap { path in queue.firstIndex(where: { $0.normalizedPath == path }) } ?? -1
+        FaderStorage.defaults.set("queue", forKey: "Fader.playingSourceKind")
+        FaderStorage.defaults.set("Current Queue", forKey: "Fader.playingSourceName")
+        FaderStorage.defaults.set("", forKey: "Fader.playingSourceID")
+        persistSession()
     }
 
     func append(_ tracks: [Track]) {
@@ -802,7 +930,7 @@ final class Player: ObservableObject {
 
     func setVolume(_ v: Float) {
         volume = v
-        UserDefaults.standard.set(v, forKey: "Fader.savedVolume")
+        FaderStorage.defaults.set(v, forKey: "Fader.savedVolume")
         if v > 0 {
             lastVolume = v
         }
@@ -818,11 +946,11 @@ final class Player: ObservableObject {
     }
 
     func toggleShuffle() {
-        if isRestoringSession && isFinderPlayback { finderTransportSettingsChanged = true }
+        if (isRestoringSession || !sessionRestorationStarted) && isFinderPlayback { finderTransportSettingsChanged = true }
         shuffle.toggle(); status = "Shuffle \(shuffle ? "on" : "off")." }
 
     func cycleRepeat() {
-        if isRestoringSession && isFinderPlayback { finderTransportSettingsChanged = true }
+        if (isRestoringSession || !sessionRestorationStarted) && isFinderPlayback { finderTransportSettingsChanged = true }
         let order: [RepeatMode] = [.off, .all, .one]
         let i = order.firstIndex(of: repeatMode) ?? 0
         repeatMode = order[(i + 1) % order.count]
