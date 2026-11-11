@@ -1,0 +1,264 @@
+jcifs-ng 2.1.10
+- Update dependencies, compatibility with latest BouncyCastle (#345,#342,#344)
+
+jcifs-ng 2.1.9
+- Properly set broadcast flag when NetBIOS name requests (#314) 
+- Fix default credential initialization (#324) 
+- Properly initialize AndX respones, guard against NPE (#321)
+- Fix AndX SMB1 batching configuration, disable by default
+- Fixup short names in root DFS referral, if enabled
+
+jcifs-ng 2.1.8
+- Relax SMB2 tree id check, all but -1 are valid 
+
+jcifs-ng 2.1.7
+- Handle USER_SESSION_DELETED by resetting/disconnecting the
+  transport connection (#242,#294)
+- More consistent configuration of SMB2 enumeration/info
+  requested buffer size. Slighly lower requested size to 
+  allow for exzessive, but legal, additional padding. 
+- Update dependencies
+- Switch back to regular Boucycastle multi-release JAR,
+  users with broken tooling should override the dependency
+- Add debugging of filePointer when writing.
+- Fix endless loop when dumping DFS referral cache on TRACE
+  level
+
+jcifs-ng 2.1.6
+- Request minimal access when querying file information to avoid
+  sharing violations (#261,#239)
+- Fix NetBIOS lookup when multiple addresses are returned (#258)
+- Fix skipping of unexpected messages when using SMB2 (#268)
+- Guard against NPE when releasing buffers (#266)
+- No longer require same connection/session/tree for rename target (#118)
+- Bump bouncycastle, forward compat (#262)
+
+jcifs-ng 2.1.5
+- Fix invalid negotitate context parsing that caused 
+  OutOfMemoryException for pre 3.11 protocols (#178)
+- Fix SMB1 initial pipe transaction response size,
+  resulted in padding being used as data and
+  thereby IPC parsing errors (#210)
+- Fix SMB_COM_TRANSACTION padding (#211)
+- Set maximum protocol version to at least minimum version (#216)
+- Fix use of sharing flags in SmbFileInputStream (#222)
+- Redesign guest authentication, fix guest logon on various
+  systems: Username/password for guest authentication can
+  now be configured, default username now is JCIFSGUEST.
+  Proper login with the username guest is now possible.
+  Also add configuration to permit silent guest fallback,
+  when actually a username/password is specified. 
+- Add fallback when server does not support server-side copy
+- Workaround Samba bug, causing "Invalid parameter" error
+  when invalid credentials are used a MIC is present.
+  This avoids sending a MIC when guest auth is used,
+  also remaps the error to an SmbAuthException (#226)
+- Inherit URLStreamHandler when creating child resources (#231)
+- Fix "Invalid parameter" DOS error mapping
+- Add one-shot setFileTimes operaiton (#233)
+- Add ability to directly autenticate using NT hash (#235)
+- Marked logon check functions as deprecated.
+  No replacement planned, use an actual authentication protocol
+  instead.
+- Bump bouncycastle version, no longer compatible with pre 
+  1.62 
+
+
+jcifs-ng 2.1.4
+- Send AvTargetName during SMB SessionSetup with NTLM (#203)
+- Add methods to ensure opening of the target files (#199)
+- Fix DCERPC resonse fragment handling (again)
+- Only perform parameter validation if signing is possible (#192)
+- Add missing option to disable secure SMB2.1 negotation (#192)
+- Fix session/connection leak on authentication errors (#191)
+- Use correct share when retrying guest/anonymous auth (#193
+- Lazily remove connections from pool to avoid deadlocks (#188)
+- Only try to parse negotiate contexts if dialect is 3.11 (#178)
+- More meaningful exception when no negotation info is present (#178)
+- Avoid possible deadlock when exceptions occur during session setup 
+- Fix handling of DFS root referrals (#78, thanks to Shon Vella)
+
+jcifs-ng 2.1.3
+- Truncate existing file when copying (#173)
+- Fix DCERPC fragment receive buffer resizing strategy
+  causing ArrayIndexOutOfBoundsException (#170)
+- Allow authentication with empty password (#158)
+- Fix guest login (#166)
+- Fix NPE in Hex trace output in NtlmContext (#160) 
+- Fix 2.02 only multi-protocol negotiation behavior (#156) 
+- Fix isSameTree check, resulting in copy failure for same name shares (#157)
+- Fix share enumeration server stickyness, keep server name (#149)
+- Remove finalizers on often created classes to avoid performance issues,
+  getting noticed about resources that are not released properly now
+  required setting jcifs.traceResources=true (#171)
+- Allow tid=0, which is valid according to the specification (#149) 
+- Fix DCERPC Binding option parser
+- Fix DCERPC IPv6 server specifictions (#165)
+- Remove broken Java 7 check in registerSmbURLHandler (#167)
+
+jcifs-ng 2.1.2
+- Fix processing of multi fragment DCERPC responses (#130)
+- Fix processing of DCERPC fragments longer than recv size (#130)
+- Fix GSS-API context flag defintions (#130)
+- Fix NPE when specifiying user via URL userinfo and domain unset (#113)
+- Fix possible NPE in in SmbShareInfo (#136)
+- Work around issues resolving DFS paths when target share has DFS flag (#134)
+- Fix wrong disposition when opening SMB2 pipes (#138)
+- Fix NTLM Type3 parsing error (#120)
+- Fix NTLM flag interpretation/enforcement  (#135)
+- Fix some concurrency issues obtaining/closing connections (#118,#126)
+- Fix race condition resulting in unbalanced acquire/release (#147)
+- Fix deadlock on connection failure (#143)
+- Update bouncycastle dependency, fix compatiblity issue
+- Be more tolerant when resolving owner user/group SID
+- Silence some logging a bit
+
+jcifs-ng 2.1.1
+- Properly compute length of last compound response in a chain (#103)
+- Do not send workstation name by default, do not send a wrong domain name
+  (#98)
+- Prevent fallback to anonymous session on auth failures of an authenticated
+  one (can be a security issue).
+- Fix LARGE__WRITEX buffer size negotiation (SMB1,#106)
+- More graceful handling of NO_MORE_FILES status
+- Ignore empty notifications (#117)
+- Fix timeout handling when acquiring credits (#99)
+- Fix test build on Java 7 (#113)
+- Fix possible NPE in in SmbShareInfo (#108)
+- Always reset credits on reconnect (#99)
+
+
+jcifs-ng 2.1.0
+- Basic SMB 3.0 support (signing)
+- Enable SMB2 support by default. Protocol versions to enable/disable
+  are now controlled by jcifs.smb.client.minVersion/maxVersion.
+- Support for session reauthentication (#21)
+- Android compat by removing JGSS dependency when unneeded (#20)
+- Send SPNEGO wrapped NTLMSSP tokens, old behavor can be restored
+  by setting jcifs.smb.useRawNTLM=true
+- Support for SPNEGO and NTLM integrity (mechListMIC, NTLM MIC),
+  checks can be disabled with jcifs.smb.client.disableSpnegoIntegrity
+  or enforced generally jcifs.smb.client.enforceSpnegoIntegrity
+- Disable jcifs.smb.client.ignoreCopyToException by default.
+
+jcifs-ng 2.0.8
+- Properly compute length of last compound response in a chain (#103)
+- Prevent fallback to anonymous session on auth failures of an authenticated
+one (can be a security issue).
+- Fix LARGE__WRITEX buffer size negotiation (SMB1,#106)
+- Fix possible NPE in in SmbShareInfo (#108)
+- Fix timeout handling when acquiring credits (#99)
+
+jcifs-ng 2.0.7
+- Clear attribute cache after rename operation (#69)
+- Fix possible deadlock in tree handling (#72)
+- Fix NPE when checking status of disconnected SmbTransport (#85)
+- Fix hiding of internal shares (#87)
+Big thanks to Shon Vella:
+- Fix SmbFile.getDfsPath() retuing "null/" (#86)
+- Fix parsing of response messages for certain exceptional status codes (#92)
+- Add missing Pipe available() SMB2 implementation (#92)
+
+jcifs-ng 2.0.6
+- [SECURITY] Properly throws exceptions from SmbTransportPool.logon (#68)
+- Only enforce signing for DFS IPC when signing is enabled 
+- Fix SMB2_NEGOTIATE_SIGNING_REQUIRED value resulting in wrong 
+  signing negotation (probably still incomplete)
+- Don't send selectedMech in SPNEGO follow ups 
+- Ignore missing signatures on final SessionSetup response (#57)
+- Fix "invalid null Subject provided" when using a JAAS config file (#52)
+- Allow tid = 0 for SMB1 (#63)
+- Use hostname in share enumeration when using kerberos authentication (#62)
+- Don't add duplicate trailing slash in Trans2FindFirst2 (#61)
+
+jcifs-ng 2.0.5
+- Fix path canonicalization when constructing share URLs, retain traling slash (#41)
+- Fix SmbRandomAccessFile.readFully advancing the file pointer twice (#42)
+- Add DFS excemption for IPC$ share, working around servers (NetApp) settings
+  wrong share flags (#35).
+- Fix infinite loop when resolving SIDs (#34)
+- Some javadoc fixes (Thanks to Urs Joss)
+- Properly reset original path for retries, fixing NPE with nested DFS links
+  (#24)
+- Fix possible NPE when an invalid smb: URL is supplied (#30)
+- Fix waiting for SmbComTransaction responses, fixing various race conditions
+  (#33)
+- Handle 2.02 dialect correctly in SMB2 negotitation (#26)
+
+jcifs-ng 2.0.4
+- [SECURITY] Do not leak NTLM session keys
+- Fix file enumeration when entry count exceeds listCount (SMB1, #16)
+- Fix legacy server enumeration (#22)
+- Deprecate legacy server enumeration, throw SmbUnsupportedOperation
+  when unavailable.
+- Allow singleton initialization with custom properties (#19)
+- Don't include trailing slash in Create requests.
+
+jcifs-ng 2.0.3
+- Fix possible "Message size exceeds maximum buffer size" exceptions
+  by properly accounting for buffer padding (#15)
+
+jcifs-ng 2.0.2
+- Fix grave memory leak, messages not being removed from response_map (#14)
+
+jcifs-ng 2.0.1
+- Fix possible SmbRandomAccessFile read corruption when output buffer size
+  greater than read size.
+- Fix SmbRandomAccessFile access flags, causing AccessDenied
+- Add designated SmbEndOfFileException exception
+- Don't throw exception when enumerations don't return any result
+- Add a replacing renameTo operation (SMB2 only)
+
+jcifs-ng 2.0.0
+- Add SMB2 support (2.02 protocol level), optional for now (jcifs.smb.client.enableSMB2)
+- Some work on the DFS code, improving efficiency and fixing some bugs. 
+- Honor CIFS request multiplexing limits
+- Improved multi-address retry logic (prefer a working connection over a broken one)
+- Further refactoring, some more tests
+- Server-side copy support (SMB2 only)
+- Fix busy looping of disconnected transports.
+- Cancel notify requests using cancel command (so that it properly works with samba, too)
+
+jcifs-ng 1.6.0 (unreleased)
+- Completely overhaul the way SMB resources are used
+ - Idle disconnects will no longer break active resources (by default this means file descriptors), that behavior induced 
+   a wide range of potential bugs, including broken file locks and race conditions resulting in SMB errors.
+ - File descriptors are no longer magically shared through SmbFile. 
+ - Every occasion where a file descriptor is used now returns a handle object controlling it's lifetime.
+ - An optional mode (jcifs.smb.client.strictResourceLifecycle=true) to also prevent disconnecting trees that are still in use.
+- Refactoring of SmbFile breaking it up into smaller parts with clearer responsibilities.
+- Further refactoring for clean API/implementation split.
+- Do not retry requests when there is no way they ever could succeed.
+- Increased test coverage, fix some issues with legacy connections found through that.
+- Change logging to use SLF4J facade
+- Copy operations now use SmbFileInput/OutputStream and therefor can use LargeX
+- Streaming enumeration operations
+
+jcifs-ng 1.5.3
+- Fix thread leak when establishing a connection fails
+- Add mitigation against idle timeout issues that cause serious bugs in some usage scenarios:
+ - Session timeout can be configured (jcifs.smb.client.sessionTimeout, in ms) setting it to 0 disables session timeout
+ - Transport idle timeouts can be disabled (jcifs.smb.client.noIdleTimeout=true)
+- Fix bug that exclusive transport connections could be reused.
+
+jcifs-ng 1.5.2
+- Fix SmbFile(String) constructor to allow passing credentials in URL.
+- Mark already deprecated NTLM filter/servlets @Deprecated
+- Fix some porting errors in NtlmHttpURLConnection, pass through a couple of
+  more HttpURLConnection settings.
+- Mark NtlmHttpURLConnection @Deprecated for it's inherent design and security 
+  issues. Add a warning to the documentation.
+
+jcifs-ng 1.5.1
+- Fix bundle manifest errors
+- Dont wait for response timeout when the transport connection is closed. 
+- Fallback to secondary port on any IOException during negotiation.
+- Fix NTLMSSP anonymous auth, by default use Extended Security for everything.
+- Fix SPNEGO NTLM fallback, add option to disable (jcifs.smb.allowNTLMFallback)
+- Yet anther signing sequence fix.
+- Work-around DFS+kerberos problems, add option to heuristically convert NetBIOS names to FQDN (set jcifs.smb.client.dfs.convertToFQDN=true to enable)  
+- Properly fix domain referrals. Cache DC referrals.
+- Some more reliability with random disconnects.
+- Security hardening:
+ - enforce SMB signing by default for IPC connections, relates to CVE-2016-2115 (jcifs.smb.client.ipcSigningEnforced=false to disable)
+ - Allow enforcement of Extended Security (SPNEGO) (jcifs.smb.client.forceExtendedSecurity=true to enable)
