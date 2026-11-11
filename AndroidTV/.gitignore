@@ -1,0 +1,12 @@
+.gradle/
+**/build/
+local.properties
+.DS_Store
+.emulator/
+tests/out/
+*.log
+ui-test.xml
+
+discovery-*.xml
+ui-*.xml
+preview*.png
