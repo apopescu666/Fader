@@ -10,6 +10,8 @@ Native music player for Apple Silicon Macs running macOS 14 or later.
 
 **[Download Fader for macOS](https://github.com/apopescu666/Fader/releases)**
 
+**[macOS Source Code & Documentation](https://github.com/apopescu666/Fader/tree/main/Sources)**
+
 ### Android TV — Version 1.0
 
 Native music player for Android TV, featuring network music browsing, playback controls, favorites, and a TV-friendly interface.
