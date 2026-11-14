@@ -1,6 +1,6 @@
-# Fader — Music Player for macOS & Android TV
+# Fader – Music Player for macOS, Android TV & Android Mobile
 
-Fader is a free, open-source music player available for macOS and Android TV.
+Fader is a free, open-source music player available for macOS, Android TV and Android smartphones.
 
 ## Available Versions
 
@@ -19,6 +19,14 @@ Native music player for Android TV, featuring network music browsing, playback c
 **[Download Fader Android TV 1.0](https://github.com/apopescu666/Fader/releases/tag/android-tv-v1.0.0)**
 
 **[Android TV Source Code & Documentation](https://github.com/apopescu666/Fader/tree/main/AndroidTV)**
+
+### Android Mobile – Version 1.0
+
+Native music player designed for Android smartphones.
+
+**[Download Fader Android Mobile 1.0](https://github.com/apopescu666/Fader/releases/tag/android-mobile-v1.0.0)**
+
+**[Android Mobile Source Code & Documentation](https://github.com/apopescu666/Fader/tree/main/AndroidMobile)**
 
 ---
 
