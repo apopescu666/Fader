@@ -28,6 +28,38 @@ Native music player designed for Android smartphones.
 
 **[Android Mobile Source Code & Documentation](https://github.com/apopescu666/Fader/tree/main/AndroidMobile)**
 
+## Screenshots
+
+### macOS
+
+**Music Library & Playlists**
+
+![Fader macOS Music Library](Screenshots/macOS/fader-main.png)
+
+**Fader Lite**
+
+![Fader Lite Player](Screenshots/macOS/fader-lite.png)
+
+### Android TV
+
+**Music Library & Playback**
+
+![Fader Android TV Library](Screenshots/AndroidTV/fader-tv-library.jpg)
+
+**Full-screen Player**
+
+![Fader Android TV Player](Screenshots/AndroidTV/fader-tv-player.jpg)
+
+### Android Mobile
+
+**Music Library**
+
+<img src="Screenshots/AndroidMobile/fader-mobile-library.png" alt="Fader Android Mobile Library" width="300">
+
+**Now Playing**
+
+<img src="Screenshots/AndroidMobile/fader-mobile-player.png" alt="Fader Android Mobile Player" width="300">
+
 ---
 
 ## macOS Documentation
