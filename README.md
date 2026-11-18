@@ -20,11 +20,11 @@ Native music player for Android TV, featuring network music browsing, playback c
 
 **[Android TV Source Code & Documentation](https://github.com/apopescu666/Fader/tree/main/AndroidTV)**
 
-### Android Mobile – Version 1.0
+### Android Mobile — Version 2.0.1
 
-Native music player designed for Android smartphones.
+A native music player for Android smartphones, featuring a custom playback engine (MediaCodec + PCM mixer), smooth crossfade, NAS caching, and Android Auto integration.
 
-**[Download Fader Android Mobile 1.0](https://github.com/apopescu666/Fader/releases/tag/android-mobile-v1.0.0)**
+**[Download Fader Android Mobile 2.0.1](https://github.com/apopescu666/Fader/releases/tag/android-mobile-v2.0.1)**
 
 **[Android Mobile Source Code & Documentation](https://github.com/apopescu666/Fader/tree/main/AndroidMobile)**
 
