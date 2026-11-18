@@ -43,6 +43,11 @@ class PlaybackService : Service() {
         super.onCreate()
         // The service can be started by a headset button with no UI running.
         runCatching { FaderPlayer.init(applicationContext) }
+        runCatching {
+            FaderPlayer.applyCrossfade(
+                com.fader.mobil.data.SettingsStore.fade(applicationContext),
+            )
+        }
         try {
             setUp()
         } catch (error: Throwable) {
@@ -164,6 +169,7 @@ class PlaybackService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        savePositionNow()
         FaderPlayer.note("service destroyed")
         FaderPlayer.removeListener(listener)
         session.isActive = false
@@ -174,13 +180,56 @@ class PlaybackService : Service() {
     override fun onTaskRemoved(rootIntent: Intent?) {
         // Closing the app always stops playback and the service, so it cannot
         // linger in the background and come back on its own.
+        savePositionNow()
         FaderPlayer.stop()
         stopSelf()
+    }
+
+    /** Flushes the position so a cold start resumes almost exactly. */
+    private fun savePositionNow() {
+        // After stop() the queue is empty; never overwrite a good position.
+        if (FaderPlayer.currentUrl == null) return
+        runCatching {
+            PlaybackSessionStore.savePosition(
+                this,
+                FaderPlayer.queueIndex,
+                FaderPlayer.positionMs,
+            )
+        }
+    }
+
+    private val artTried = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val artHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    /** Loads the missing cover in the background, then republishes. */
+    private fun requestArtwork() {
+        val art = FaderPlayer.currentArt() ?: return
+        if (!artTried.add(art.key)) return
+        Thread {
+            runCatching {
+                when {
+                    art.uri.startsWith("remote:") -> kotlinx.coroutines.runBlocking {
+                        com.fader.mobil.core.RemoteLibrary.coverBitmapFor(
+                            art.uri.removePrefix("remote:"),
+                        )
+                    }
+                    art.uri.startsWith("file:") ->
+                        BitmapFactory.decodeFile(art.uri.removePrefix("file:"))
+                    else -> contentResolver.loadThumbnail(
+                        android.net.Uri.parse(art.uri),
+                        Size(512, 512),
+                        null,
+                    )
+                }
+            }
+            artHandler.post { runCatching { publish() } }
+        }.start()
     }
 
     private fun publish() {
         val title = FaderPlayer.title
         val artwork = artwork()
+        if (artwork == null) requestArtwork()
         session.setMetadata(
             MediaMetadata.Builder()
                 .putString(MediaMetadata.METADATA_KEY_TITLE, title)
@@ -280,48 +329,84 @@ class PlaybackService : Service() {
     }
 
     private fun resumeLastSession() {
-        Thread {
-            runCatching {
-                RemoteLibrary.init(applicationContext)
-                val saved = WebDavCredentials.load(this)
-                if (saved != null && !RemoteLibrary.isConnected) {
-                    kotlinx.coroutines.runBlocking {
-                        RemoteLibrary.connect(saved.url, saved.user, saved.password)
-                    }
-                }
-                val permission = if (android.os.Build.VERSION.SDK_INT >= 33) {
-                    android.Manifest.permission.READ_MEDIA_AUDIO
-                } else {
-                    android.Manifest.permission.READ_EXTERNAL_STORAGE
-                }
-                val granted = androidx.core.content.ContextCompat.checkSelfPermission(
-                    this,
-                    permission,
-                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-                if (granted && !LocalLibrary.isReady) LocalLibrary.load(this)
+        val session = PlaybackSessionStore.load(this) ?: return
+        FaderPlayer.note("media button: session with ${session.tracks.size} tracks")
+        val first = session.tracks.getOrNull(session.index)
+        // Cache first: a downloaded (or partially downloaded) track starts
+        // playing before the NAS connect and the local index, which then load
+        // in the background.
+        val firstCached = first != null && runCatching {
+            com.fader.mobil.engine.AudioDecoder.hasCachedFile(
+                applicationContext,
+                com.fader.mobil.engine.AudioSource(first.url, first.remote),
+            )
+        }.getOrDefault(false)
+        val start = Runnable {
+            val restored = runCatching {
+                FaderPlayer.restoreSession(session.tracks, session.index, session.positionMs)
+            }.getOrDefault(false)
+            FaderPlayer.note("media button: restored=$restored cached=$firstCached")
+            if (restored) {
+                FaderPlayer.play()
+                return@Runnable
             }
-            val session = PlaybackSessionStore.load(this) ?: return@Thread
-            FaderPlayer.note("media button: session with ${session.tracks.size} tracks")
-            // ExoPlayer must be touched on the main thread only.
-            android.os.Handler(android.os.Looper.getMainLooper()).post {
-                val restored = runCatching {
-                    FaderPlayer.restoreSession(session.tracks, session.index, session.positionMs)
+            // Fallback: at least bring the single last song back.
+            val saved = com.fader.mobil.data.UiState.playback(this)
+            if (saved != null) {
+                val single = runCatching {
+                    FaderPlayer.restoreLastTrack(
+                        saved.trackUrl, saved.title, saved.artist, "", saved.positionMs,
+                    )
                 }.getOrDefault(false)
-                FaderPlayer.note("media button: restored=$restored")
-                if (restored) {
-                    FaderPlayer.play()
-                    return@post
+                if (single) FaderPlayer.resumeRestored()
+            }
+        }
+        if (firstCached) {
+            android.os.Handler(android.os.Looper.getMainLooper()).post(start)
+        }
+        Thread {
+            val needsRemote = session.tracks.any { it.remote }
+            val needsLocal = session.tracks.any { !it.remote }
+
+            // Local index and the NAS connect run in parallel; the NAS is only
+            // waited for when the saved queue actually has remote songs.
+            val remoteThread = if (needsRemote) {
+                Thread {
+                    runCatching {
+                        RemoteLibrary.init(applicationContext)
+                        val saved = WebDavCredentials.load(this)
+                        if (saved != null && !RemoteLibrary.isConnected) {
+                            kotlinx.coroutines.runBlocking {
+                                RemoteLibrary.connect(saved.url, saved.user, saved.password)
+                            }
+                        }
+                    }
+                }.apply { start() }
+            } else {
+                null
+            }
+
+            if (needsLocal) {
+                runCatching {
+                    val permission = if (android.os.Build.VERSION.SDK_INT >= 33) {
+                        android.Manifest.permission.READ_MEDIA_AUDIO
+                    } else {
+                        android.Manifest.permission.READ_EXTERNAL_STORAGE
+                    }
+                    val granted = androidx.core.content.ContextCompat.checkSelfPermission(
+                        this,
+                        permission,
+                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                    if (granted && !LocalLibrary.isReady) LocalLibrary.load(this)
                 }
-                // Fallback: at least bring the single last song back.
-                val saved = com.fader.mobil.data.UiState.playback(this)
-                if (saved != null) {
-                    val single = runCatching {
-                        FaderPlayer.restoreLastTrack(
-                            saved.trackUrl, saved.title, saved.artist, "", saved.positionMs,
-                        )
-                    }.getOrDefault(false)
-                    if (single) FaderPlayer.resumeRestored()
-                }
+            }
+
+            remoteThread?.join()
+            // The restored queue was built before the NAS connected: give it
+            // the auth header so Next/previous work too.
+            runCatching { FaderPlayer.refreshRemoteHeaders() }
+            if (!firstCached) {
+                android.os.Handler(android.os.Looper.getMainLooper()).post(start)
             }
         }.start()
     }

@@ -1,19 +1,21 @@
-# Fader Mobil
+# Fader Motor
 
 Player de muzică pentru telefon, construit în jurul accesibilității: se poate
 folosi complet cu TalkBack, cu o singură mână, cu taste hardware și cu text
 mărit până la 200%.
 
-**Stare:** M2 — bibliotecă locală + WebDAV/HTTPS. Aplicația scanează
-MediaStore, se conectează la un share WebDAV (merge și din alte rețele),
-navighează, redă prin streaming cu seek și extrage coperta din fiecare fișier.
+**Stare:** 0.41 — motor propriu de redare (MediaCodec + AudioTrack + mixer PCM),
+crossfade equal-power, bibliotecă locală + WebDAV/HTTPS și Android Auto.
+Aplicație separată (`com.fader.motor`); proiectul Fader (`com.fader.mobil`) nu e
+atins.
 
 ## Ce există acum
 
 - Kotlin + Jetpack Compose (Material 3), o singură activitate
 - Ecrane: **Library**, **Browse** (foldere + melodii), **Now Playing**, **Queue**, **Settings**
 - Bibliotecă locală din MediaStore, indexată o dată în fundal; listările sunt citiri din memorie
-- Redare reală prin ExoPlayer: play/pause, next/prev, progres, mini player
+- Redare prin motor propriu (`engine/`): decode MediaCodec, o singură ieșire
+  AudioTrack, mix a două surse, crossfade equal-power la Next/Prev/automat
 - Coperti reale: album art din MediaStore, cache în memorie pe album, încărcare asincronă
 - **WebDAV/HTTPS**: adaugi adresa share-ului + credențiale, navighezi și asculți prin streaming cu seek — merge și pe date mobile
 - Coperti extrase per piesă din ID3 (MP3), FLAC PICTURE sau atomul `covr` (M4A), cu cache pe disc
@@ -22,7 +24,11 @@ navighează, redă prin streaming cu seek și extrage coperta din fiecare fișie
 - Accent unic teal, ținte de atingere ≥ 44 pt, contrast ridicat
 - Iconițe desenate pe canvas — zero dependință de iconițe
 - Strat de transport portat din aplicația anterioară: SMB, SFTP, WebDAV, local
-- `core/PlayerCore.java` — motorul de redare, legat la UI prin `core/FaderPlayer.kt`
+- `core/FaderPlayer` → `core/EngineBackend` → `engine/MixerEngine` — UI-ul nu
+  depinde de niciun player extern (nici ExoPlayer)
+- `engine/EngineAdapter` — motorul expus ca `Player` Media3 pentru Android Auto
+- `playback/PlaybackService` — notificare + lock screen (5 acțiuni)
+- `playback/FaderMediaService` — bibliotecă Media3 pentru Android Auto
 
 ## Structura
 
@@ -32,7 +38,9 @@ Fader Android Mobil/
 │   ├── MainActivity.kt
 │   ├── ui/            # FaderApp, theme, screens, components
 │   ├── data/          # modele + date demonstrative
-│   └── core/          # cod Java portat: player + clienți de transport
+│   ├── core/          # fațada player-ului + transport (WebDAV/local)
+│   ├── engine/        # motorul propriu: decoder, mixer, sink, adaptor Media3
+│   └── playback/      # servicii: notificare/lock screen + Android Auto
 ├── app/src/main/res/  # manifest, temă, iconiță
 ├── design/            # mockup-uri HTML + capturi + planșă
 ├── docs/PLAN.md       # plan de produs și arhitectură
@@ -44,7 +52,7 @@ Fader Android Mobil/
 
 ```bash
 ./build.sh assembleDebug     # APK în app/build/outputs/apk/debug/
-# APK gata de instalat: Fader-Mobil-0.1-debug.apk (în rădăcina proiectului)
+# APK gata de instalat: Fader-Motor-0.41-debug.apk (în rădăcina proiectului)
 ./build.sh installDebug      # pe dispozitiv conectat
 ./build.sh lintDebug
 ```

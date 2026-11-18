@@ -2,10 +2,11 @@ package com.fader.mobil.core
 
 import android.content.Context
 import android.content.Intent
+import androidx.media3.common.Player
 
 /**
- * Thin façade over the ported ExoPlayer wrapper. Everything the UI needs is a
- * primitive or a callback, so package-private engine types never leak out.
+ * Façade over [EngineBackend]: everything the UI, the foreground service and the
+ * car session need, expressed as primitives and callbacks.
  */
 object FaderPlayer {
 
@@ -14,25 +15,24 @@ object FaderPlayer {
     }
 
     private val listeners = mutableListOf<Listener>()
-    private var bridge: PlayerCore.Listener? = null
+    private var bridge: EngineBackend.Listener? = null
 
     @Volatile
     private var appContext: Context? = null
 
+    @Volatile
+    private var adapter: com.fader.mobil.engine.EngineAdapter? = null
+
     fun init(context: Context) {
         if (bridge != null) return
         appContext = context.applicationContext
-        PlayerCore.init(context)
-        val b = object : PlayerCore.Listener {
-            override fun onChanged() {
-                listeners.toList().forEach { it.onChanged() }
-            }
+        EngineBackend.init(context)
+        val listener = EngineBackend.Listener {
+            listeners.toList().forEach { runCatching { it.onChanged() } }
         }
-        bridge = b
-        PlayerCore.INSTANCE.addListener(b)
+        bridge = listener
+        EngineBackend.addListener(listener)
     }
-
-    private val core: PlayerCore get() = PlayerCore.INSTANCE
 
     fun addListener(listener: Listener) {
         if (!listeners.contains(listener)) listeners.add(listener)
@@ -42,79 +42,118 @@ object FaderPlayer {
         listeners.remove(listener)
     }
 
-    fun toggle() = core.toggle()
-    fun setCrossfade(seconds: Int) = core.setCrossfade(seconds)
-    fun setGapless(enabled: Boolean) = core.setGapless(enabled)
-    fun play() = core.play()
-    fun resumeRestored() = core.resumeRestored()
-    fun pause() = core.pause()
-    fun setShuffle(enabled: Boolean) = core.setShuffle(enabled)
-    val shuffle: Boolean get() = core.isShuffle
-    fun cycleRepeat() = core.cycleRepeat()
-    val repeatMode: Int get() = core.repeat
-    val currentSize: Long get() = core.currentSize()
-    val currentName: String get() = core.currentName()
-    val crossfade: Int get() = core.crossfade
-    fun stop() = core.stop()
-    fun next() = core.next()
-    fun previous() = core.prev()
-    fun seekTo(ms: Int) = core.seekTo(ms)
+    // ---- transport -----------------------------------------------------
 
-    val isPlaying: Boolean get() = core.isPlaying
-    val positionMs: Int get() = core.position
-    val durationMs: Int get() = core.duration
+    fun toggle() = EngineBackend.toggle()
+    fun play() = EngineBackend.play()
+    fun pause() = EngineBackend.pause()
+    fun resumeRestored() = EngineBackend.play()
+    fun stop() = EngineBackend.stop()
+    fun next() = EngineBackend.next()
+    fun previous() = EngineBackend.previous()
+    fun seekTo(ms: Int) = EngineBackend.seekTo(ms)
 
-    val currentUrl: String? get() = core.current()?.entry?.url
+    val isPlaying: Boolean get() = EngineBackend.isPlaying
+    val positionMs: Int get() = EngineBackend.positionMs
+    val durationMs: Int get() = EngineBackend.durationMs
 
-    val title: String? get() = core.current()?.title
-    val artist: String? get() = core.current()?.artist
-    val album: String? get() = core.current()?.album
+    val currentUrl: String? get() = EngineBackend.currentUrl
+    val title: String? get() = EngineBackend.title
+    val artist: String? get() = EngineBackend.artist
+    val album: String? get() = EngineBackend.album
+    val nextTitle: String? get() = EngineBackend.nextTitle
 
-    val nextTitle: String? get() = core.peek(1)?.title
+    val currentSize: Long get() = EngineBackend.currentSize
+    val currentName: String get() = EngineBackend.currentName
 
-    /** Media item for the car session, with the auth handled by the data source. */
-    fun queueEntries(): List<QueueEntry> = core.queueSnapshot()
+    // ---- settings ------------------------------------------------------
 
-    fun userQueueEntries(): List<QueueEntry> = core.userQueueSnapshot()
+    fun setCrossfade(seconds: Int) = EngineBackend.setCrossfade(seconds)
+    fun applyCrossfade(seconds: Int) = EngineBackend.applyCrossfade(seconds)
+    val crossfade: Int get() = EngineBackend.crossfade
+    fun setGapless(enabled: Boolean) = EngineBackend.setGapless(enabled)
 
-    fun playUserQueue(index: Int) = core.playUserQueue(index)
+    fun setShuffle(enabled: Boolean) = EngineBackend.setShuffle(enabled)
+    val shuffle: Boolean get() = EngineBackend.shuffle
+    fun cycleRepeat() = EngineBackend.cycleRepeat()
+    val repeatMode: Int get() = EngineBackend.repeat
 
-    fun removeUserQueueAt(index: Int) = core.removeUserQueueAt(index)
+    // ---- queue ---------------------------------------------------------
+
+    fun queueEntries(): List<QueueEntry> = EngineBackend.queueSnapshot()
+
+    fun queueSignature(): String = EngineBackend.queueSignature()
+
+    val queueIndex: Int get() = EngineBackend.queueIndex
+
+    fun userQueueEntries(): List<QueueEntry> = EngineBackend.userQueueSnapshot()
+
+    fun playUserQueue(index: Int) = EngineBackend.playUserQueue(index)
+
+    fun removeUserQueueAt(index: Int) = EngineBackend.removeUserQueueAt(index)
 
     fun addToUserQueue(urls: List<String>) {
         urls.forEach { url ->
-            val remote = url.startsWith("http://") || url.startsWith("https://")
-            val stream = if (remote) RemoteLibrary.remoteClient() else LocalLibrary.localClient()
-            if (stream != null) core.addToUserQueue(stream, url)
+            if (url.isBlank()) return@forEach
+            EngineBackend.addToUserQueue(trackFor(url))
         }
     }
 
-    /** Mirrors the saved queue into the engine, so playback can start from it. */
+    /** Mirrors the saved queue into the player, so playback can start from it. */
     fun setUserQueue(items: List<com.fader.mobil.data.Favorite>) {
-        val built = items.mapNotNull { favorite ->
-            val remote = favorite.url.startsWith("http://") || favorite.url.startsWith("https://")
-            val stream = if (remote) RemoteLibrary.remoteClient() else LocalLibrary.localClient()
-            stream?.let {
-                TrackItem(it, Entry(favorite.url.substringAfterLast('/'), favorite.url, false, 0, 0))
-            }
-        }
-        core.replaceUserQueue(built)
+        EngineBackend.replaceUserQueue(items.map { favorite ->
+            PlayTrack(
+                url = favorite.url,
+                remote = favorite.remote ||
+                    favorite.url.startsWith("http://") ||
+                    favorite.url.startsWith("https://"),
+                title = favorite.title.ifBlank {
+                    RemoteLibrary.decodeName(favorite.url.substringAfterLast('/'))
+                },
+                artist = favorite.artist,
+                album = favorite.album,
+                headers = EngineBackend.headersFor(favorite.url),
+            )
+        })
     }
 
     /** Adds tracks to the queue (or right after the current one). */
     fun enqueue(urls: List<String>, playNext: Boolean) {
-        urls.forEach { url ->
-            val remote = url.startsWith("http://") || url.startsWith("https://")
-            val stream = if (remote) RemoteLibrary.remoteClient() else LocalLibrary.localClient()
-            if (stream != null) core.enqueue(stream, url, playNext)
-        }
+        addToUserQueue(urls)
     }
 
-    fun mediaItemForSession(url: String, artworkUri: String?): androidx.media3.common.MediaItem? {
+    private fun trackFor(url: String): PlayTrack {
         val remote = url.startsWith("http://") || url.startsWith("https://")
         val stream = if (remote) RemoteLibrary.remoteClient() else LocalLibrary.localClient()
-        return stream?.let { PlayerCore.sessionItem(it, url, artworkUri) }
+        if (stream != null) {
+            return TrackItem(
+                stream,
+                Entry(RemoteLibrary.decodeName(url.substringAfterLast('/')), url, false, 0, 0),
+            )
+                .toPlayTrack()
+        }
+        return PlayTrack(
+            url = url,
+            remote = remote,
+            title = RemoteLibrary.decodeName(
+                url.substringAfterLast('/').substringBeforeLast('.'),
+            ),
+            artist = "Unknown artist",
+            album = "",
+            headers = EngineBackend.headersFor(url),
+        )
     }
+
+    // ---- session / car -------------------------------------------------
+
+    fun mediaItemForSession(
+        url: String,
+        artworkUri: String?,
+    ): androidx.media3.common.MediaItem? = SessionItems.item(
+        url, null, null, null,
+        runCatching { com.fader.mobil.data.CoverProvider.uriFor(url).toString() }
+            .getOrDefault(artworkUri),
+    )
 
     fun mediaItemForSession(
         url: String,
@@ -122,31 +161,27 @@ object FaderPlayer {
         artist: String,
         album: String,
         artworkUri: String?,
-    ): androidx.media3.common.MediaItem? {
-        val remote = url.startsWith("http://") || url.startsWith("https://")
-        val stream = if (remote) RemoteLibrary.remoteClient() else LocalLibrary.localClient()
-        return stream?.let { PlayerCore.sessionItem(it, url, title, artist, album, artworkUri) }
-    }
+        container: String? = null,
+    ): androidx.media3.common.MediaItem? = SessionItems.item(
+        url, title, artist, album,
+        runCatching { com.fader.mobil.data.CoverProvider.uriFor(url).toString() }
+            .getOrDefault(artworkUri),
+        container,
+    )
 
-    fun prepareExternalQueue() = core.prepareExternalQueue()
+    fun prepareExternalQueue() = EngineBackend.prepareExternalQueue()
 
-    fun journal(): List<String> = core.journalSnapshot()
+    fun journal(): List<String> = EngineBackend.journalSnapshot
 
     /** Rebuilds the saved queue and starts at the saved position. */
-    fun restoreSession(tracks: List<com.fader.mobil.data.SessionTrack>, index: Int, positionMs: Int): Boolean {
-        val items = tracks.mapNotNull { track ->
-            val stream = if (track.remote) RemoteLibrary.remoteClient() else LocalLibrary.localClient()
-            stream?.let {
-                val item = TrackItem(it, Entry(track.url.substringAfterLast('/'), track.url, false, 0, 0))
-                if (track.title.isNotBlank()) item.title = track.title
-                if (track.artist.isNotBlank()) item.artist = track.artist
-                item
-            }
-        }
-        if (items.isEmpty()) return false
-        core.play(items, index.coerceIn(0, items.lastIndex))
-        core.seekTo(positionMs.coerceAtLeast(0))
-        return true
+    fun restoreSession(
+        tracks: List<com.fader.mobil.data.SessionTrack>,
+        index: Int,
+        positionMs: Int,
+    ): Boolean {
+        val plays = EngineBackend.sessionTracks(tracks)
+        if (plays.isEmpty()) return false
+        return EngineBackend.restoreSession(plays, index, positionMs)
     }
 
     /** Puts the last played song back in the player, paused, after a restart. */
@@ -157,24 +192,46 @@ object FaderPlayer {
         album: String,
         positionMs: Int,
     ): Boolean {
-        val remote = url.startsWith("http://") || url.startsWith("https://")
-        val stream = if (remote) RemoteLibrary.remoteClient() else LocalLibrary.localClient()
-            ?: return false
-        return core.restoreLastTrack(stream, url, title, artist, album, positionMs)
+        if (url.isBlank()) return false
+        return EngineBackend.restoreLastTrack(
+            PlayTrack(
+                url = url,
+                remote = url.startsWith("http://") || url.startsWith("https://"),
+                title = title.ifBlank {
+                    RemoteLibrary.decodeName(url.substringAfterLast('/'))
+                },
+                artist = artist,
+                album = album,
+                headers = EngineBackend.headersFor(url),
+            ),
+            positionMs,
+        )
     }
 
-    /** Lets the service record lifecycle events in the same journal. */
-    fun note(message: String) = core.noteEvent(message)
-    fun refresh() = core.refresh()
+    fun note(message: String) = EngineBackend.note(message)
 
-    val playingExternal: Boolean get() = core.isPlayingExternal
-    val inUserQueue: Boolean get() = core.isInUserQueue()
-    val currentContainer: String? get() = core.externalContainer
+    /** Late NAS connect: fill the auth headers of the restored queue. */
+    fun refreshRemoteHeaders() = EngineBackend.refreshRemoteHeaders()
+    fun refresh() = EngineBackend.refresh()
 
-    fun enterCarMode() = core.enterCarMode()
-    fun exitCarMode() = core.exitCarMode()
-    val carMode: Boolean get() = core.isCarMode
-    val sessionPlayer: androidx.media3.common.Player? get() = core.sessionPlayer()
+    val playingExternal: Boolean get() = EngineBackend.isPlayingExternal
+    val inUserQueue: Boolean get() = EngineBackend.isInUserQueue
+    val currentContainer: String? get() = EngineBackend.externalContainerUrl
+
+    fun enterCarMode() = EngineBackend.enterCarMode()
+    fun resetForCarPlayback() = EngineBackend.resetForCarPlayback()
+    fun exitCarMode() = EngineBackend.exitCarMode()
+    val carMode: Boolean get() = EngineBackend.isCarMode
+
+    /** The Media3 player the car session binds to (a thin view over the engine). */
+    val sessionPlayer: Player?
+        get() {
+            if (bridge == null) return null
+            adapter?.let { return it }
+            val created = runCatching { com.fader.mobil.engine.EngineAdapter() }.getOrNull() ?: return null
+            adapter = created
+            return created
+        }
 
     /** Plays search hits, used by the voice command MEDIA_PLAY_FROM_SEARCH. */
     fun playSearchResults(hits: List<SearchHit>, index: Int = 0) {
@@ -186,19 +243,19 @@ object FaderPlayer {
     fun ensureBackgroundService() = startPlaybackService()
 
     /** Last engine error, cleared on the next successful load. */
-    val lastError: String? get() = core.lastError
+    val lastError: String? get() = EngineBackend.lastError
 
     fun currentArt(): ArtworkRef? {
-        val url = core.current()?.entry?.url ?: return null
+        val url = EngineBackend.currentTrack()?.url ?: return null
         return LocalLibrary.art(url) ?: RemoteLibrary.art(url)
     }
 
-    /** The ExoPlayer instance, for the MediaSession. */
-    internal fun engine(): androidx.media3.common.Player? =
-        if (bridge != null) core.engine() else null
+    /** Kept for the car session: the same adapter is the Media3 player. */
+    internal fun engine(): Player? = sessionPlayer
 
     internal fun playQueue(items: List<TrackItem>, index: Int) {
-        core.play(items, index)
+        if (items.isEmpty()) return
+        EngineBackend.playTracks(items.map { it.toPlayTrack() }, index)
         startPlaybackService()
     }
 

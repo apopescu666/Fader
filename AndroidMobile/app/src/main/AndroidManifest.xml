@@ -41,6 +41,11 @@
             </intent-filter>
         </activity>
 
+        <provider
+            android:name=".data.CoverProvider"
+            android:authorities="com.fader.mobil.covers"
+            android:exported="true" />
+
         <receiver
             android:name=".playback.MediaButtonReceiver"
             android:exported="true">

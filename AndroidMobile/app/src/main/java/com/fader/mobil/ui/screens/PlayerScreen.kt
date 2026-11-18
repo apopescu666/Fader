@@ -55,6 +55,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.fader.mobil.ui.components.Artwork
 import com.fader.mobil.ui.components.FaderIcon
+import com.fader.mobil.ui.components.FaderSeekBar
 import com.fader.mobil.ui.components.FIcon
 import com.fader.mobil.ui.components.described
 import com.fader.mobil.ui.formatMs
@@ -92,9 +93,8 @@ fun PlayerScreen(
     artKey: String? = null,
     artUri: String? = null,
 ) {
-    var dragging by remember { mutableStateOf(false) }
-    var dragFraction by remember { mutableFloatStateOf(fraction0(positionMs, durationMs)) }
     var menuOpen by remember { mutableStateOf(false) }
+    var shownPosition by remember { mutableStateOf(positionMs) }
     var artColor by remember(artKey) { mutableStateOf<Color?>(null) }
     LaunchedEffect(artKey) {
         val key = artKey ?: return@LaunchedEffect
@@ -107,8 +107,6 @@ fun PlayerScreen(
             kotlinx.coroutines.delay(150)
         }
     }
-
-    val fraction = fraction0(positionMs, durationMs)
 
     Box(
         Modifier
@@ -211,19 +209,11 @@ fun PlayerScreen(
             )
 
             Spacer(Modifier.height(24.dp))
-            val shownFraction = if (dragging) dragFraction else fraction
-            val shownPosition = if (dragging) (durationMs * dragFraction).toInt() else positionMs
-            SeekBar(
-                fraction = shownFraction,
-                onSeekStart = {
-                    dragging = true
-                    dragFraction = fraction
-                },
-                onSeekPreview = { dragFraction = it },
-                onSeekCommit = {
-                    dragging = false
-                    onSeek(dragFraction)
-                },
+            FaderSeekBar(
+                positionMs = positionMs,
+                durationMs = durationMs,
+                onSeek = onSeek,
+                onPreview = { shownPosition = it },
             )
 
             Spacer(Modifier.height(6.dp))
@@ -286,69 +276,6 @@ fun PlayerScreen(
             }
             Spacer(Modifier.height(12.dp))
         }
-    }
-}
-
-private fun fraction0(positionMs: Int, durationMs: Int): Float =
-    if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
-
-@Composable
-private fun SeekBar(
-    fraction: Float,
-    onSeekStart: () -> Unit,
-    onSeekPreview: (Float) -> Unit,
-    onSeekCommit: () -> Unit,
-) {
-    Canvas(
-        Modifier
-            .fillMaxWidth()
-            .height(32.dp)
-            .pointerInput(Unit) {
-                detectHorizontalDragGestures(
-                    onDragStart = { offset ->
-                        onSeekStart()
-                        onSeekPreview((offset.x / size.width).coerceIn(0f, 1f))
-                    },
-                    onHorizontalDrag = { change, _ ->
-                        onSeekPreview((change.position.x / size.width).coerceIn(0f, 1f))
-                    },
-                    onDragEnd = { onSeekCommit() },
-                    onDragCancel = { onSeekCommit() },
-                )
-            }
-            .pointerInput(Unit) {
-                detectTapGestures { offset ->
-                    onSeekStart()
-                    onSeekPreview((offset.x / size.width).coerceIn(0f, 1f))
-                    onSeekCommit()
-                }
-            }
-            .semantics {
-                progressBarRangeInfo = ProgressBarRangeInfo(fraction, 0f..1f)
-            },
-    ) {
-        val centerY = size.height / 2f
-        val radius = 5f
-        drawRoundRect(
-            color = Color(0x29FFFFFF),
-            topLeft = Offset(0f, centerY - radius / 2f),
-            size = Size(size.width, radius),
-            cornerRadius = CornerRadius(radius / 2f),
-        )
-        val filled = size.width * fraction
-        if (filled > 0f) {
-            drawRoundRect(
-                color = Accent,
-                topLeft = Offset(0f, centerY - radius / 2f),
-                size = Size(filled, radius),
-                cornerRadius = CornerRadius(radius / 2f),
-            )
-        }
-        drawCircle(
-            color = Color.White,
-            radius = 7.dp.toPx(),
-            center = Offset(filled.coerceIn(7f, size.width - 7f), centerY),
-        )
     }
 }
 

@@ -15,7 +15,12 @@ if [ ! -x "$JAVA_HOME/bin/java" ]; then
 fi
 
 export JAVA_HOME
-export GRADLE_USER_HOME="$PWD/.gradle-home"
+# Reuse the sibling project's Gradle cache when this one has none.
+if [ ! -d "$PWD/.gradle-home" ] && [ -d "../Fader Android Mobil/Fader mobil 1.0/.gradle-home" ]; then
+  export GRADLE_USER_HOME="../Fader Android Mobil/Fader mobil 1.0/.gradle-home"
+else
+  export GRADLE_USER_HOME="$PWD/.gradle-home"
+fi
 export ANDROID_USER_HOME="$PWD/.android-user"
 
 exec ./gradlew "$@"

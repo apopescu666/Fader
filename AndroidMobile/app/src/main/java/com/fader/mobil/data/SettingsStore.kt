@@ -15,6 +15,12 @@ object SettingsStore {
         prefs(context).edit().putInt("fade", seconds).apply()
     }
 
+    fun shuffle(context: Context): Boolean = prefs(context).getBoolean("shuffle", false)
+
+    fun setShuffle(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean("shuffle", enabled).apply()
+    }
+
     fun flag(context: Context, key: String, defaultValue: Boolean): Boolean =
         prefs(context).getBoolean(key, defaultValue)
 

@@ -115,12 +115,6 @@ fun AddSourceScreen(
                 )
             }
 
-            Spacer(Modifier.height(14.dp))
-            Text(
-                "Works from any network over HTTPS — home Wi-Fi or mobile data.",
-                color = TextSecondary,
-                fontSize = 12.sp,
-            )
             Spacer(Modifier.height(20.dp))
         }
     }

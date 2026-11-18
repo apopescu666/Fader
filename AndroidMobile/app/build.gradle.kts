@@ -14,8 +14,8 @@ android {
         applicationId = "com.fader.mobil"
         minSdk = 29
         targetSdk = 35
-        versionCode = 200
-        versionName = "1.0"
+        versionCode = 209
+        versionName = "2.0.1"
     }
 
     buildFeatures {
@@ -59,7 +59,5 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     // Playback + transports ported from the previous phone app.
-    implementation("androidx.media3:media3-exoplayer:1.5.1")
     implementation("androidx.media3:media3-session:1.5.1")
-    implementation("androidx.media3:media3-datasource:1.5.1")
 }
