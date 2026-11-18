@@ -106,7 +106,11 @@ fun BrowseScreen(
     var moreMenuOpen by remember { mutableStateOf(false) }
     var selection by remember(listing.url) { mutableStateOf<Set<String>>(emptySet()) }
     val selecting = selection.isNotEmpty()
-    val selectedEntries = listing.tracks.filter { it.url in selection }
+    val uiKey = listing.url + "|" + listing.tracks.size + "|" +
+        listing.tracks.firstOrNull()?.url.orEmpty()
+    val selectedEntries = remember(selection, uiKey) {
+        if (selection.isEmpty()) emptyList() else listing.tracks.filter { it.url in selection }
+    }
 
     fun toggleSelection(url: String) {
         selection = if (url in selection) selection - url else selection + url
@@ -114,55 +118,57 @@ fun BrowseScreen(
 
     androidx.activity.compose.BackHandler(enabled = selecting) { selection = emptySet() }
 
+    // Only indices are kept, not a second copy of the whole folder: for a NAS
+    // folder with 50 000 songs that copy alone was tens of megabytes.
     val ordered = remember(listing.tracks, sort, shuffleOn) {
-        val indexed = listing.tracks.withIndex().toList()
+        val indices = listing.tracks.indices.toList()
         val sorted = when (sort) {
-            SortOrder.Default -> indexed
-            SortOrder.NameAsc -> indexed.sortedBy { it.value.title.lowercase() }
-            SortOrder.NameDesc -> indexed.sortedByDescending { it.value.title.lowercase() }
+            SortOrder.Default -> indices
+            SortOrder.NameAsc -> indices.sortedBy { listing.tracks[it].title.lowercase() }
+            SortOrder.NameDesc -> indices.sortedByDescending { listing.tracks[it].title.lowercase() }
         }
         if (shuffleOn) sorted.shuffled() else sorted
     }
-    val tracks = remember(ordered) { ordered.map { it.value.toUi() } }
-    val originalIndex = remember(ordered) { ordered.map { it.index } }
     val listState = rememberLazyListState()
     var query by remember(listing.url) { mutableStateOf("") }
-    val visible = remember(tracks, query) {
+    val visible = remember(ordered, query) {
         if (query.isBlank()) {
-            tracks.withIndex().toList()
+            ordered
         } else {
-            tracks.withIndex().filter { (_, track) ->
+            ordered.filter { index ->
+                val track = listing.tracks[index]
                 track.title.contains(query, ignoreCase = true) ||
                     track.artist.contains(query, ignoreCase = true) ||
                     track.album.contains(query, ignoreCase = true)
             }
         }
     }
-    LaunchedEffect(listing.url, tracks.size, currentUrl, shuffleOn, sort) {
+    LaunchedEffect(listing.url, visible, currentUrl, shuffleOn, sort) {
         val focusPending = focusUrl != null &&
             (focusFolderUrl == null || focusFolderUrl == listing.url)
         if (selecting || focusPending) return@LaunchedEffect
-        val index = tracks.indexOfFirst { it.id == currentUrl }
-        if (index >= 0) {
-            listState.animateScrollToItem(listing.folders.size + index)
+        val position = visible.indexOfFirst { listing.tracks[it].url == currentUrl }
+        if (position >= 0) {
+            listState.animateScrollToItem(listing.folders.size + position)
         }
     }
 
-    LaunchedEffect(listing.url, focusUrl, focusFolderUrl, tracks.size) {
+    LaunchedEffect(listing.url, focusUrl, focusFolderUrl, visible) {
         val target = focusUrl ?: return@LaunchedEffect
         if (focusFolderUrl != null && listing.url != focusFolderUrl) return@LaunchedEffect
         val targetName = fileName(target)
-        val index = tracks.indexOfFirst { track ->
-            track.id == target || fileName(track.id) == targetName
+        val position = visible.indexOfFirst { index ->
+            val url = listing.tracks[index].url
+            url == target || fileName(url) == targetName
         }
-        if (index < 0) {
+        if (position < 0) {
             // Nothing to focus here: release the flag so centring works again.
             onFocusDone?.invoke()
             return@LaunchedEffect
         }
         // Highlight first: scrolling can be interrupted by another animation.
-        highlightUrl = tracks[index].id
-        listState.animateScrollToItem(listing.folders.size + index)
+        highlightUrl = listing.tracks[visible[position]].url
+        listState.animateScrollToItem(listing.folders.size + position)
         kotlinx.coroutines.delay(2600)
         highlightUrl = null
         onFocusDone?.invoke()
@@ -353,7 +359,7 @@ fun BrowseScreen(
                     textAlign = TextAlign.End,
                 )
             }
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(8.dp))
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.Center,
@@ -397,10 +403,15 @@ fun BrowseScreen(
                     }
                 }
             }
-            Spacer(Modifier.height(10.dp))
-            SearchInput(query, { query = it }, "Search in this folder")
-            Spacer(Modifier.height(10.dp))
+            if (listing.tracks.isNotEmpty()) {
+                Spacer(Modifier.height(10.dp))
+                SearchInput(query, { query = it }, "Search in this folder")
+            }
         }
+
+        // Same gap around the search bar (10 dp); folders keep a slightly
+        // larger one because there is no search field there.
+        Spacer(Modifier.height(if (listing.tracks.isNotEmpty()) 10.dp else 18.dp))
 
         if (listing.folders.isEmpty() && visible.isEmpty()) {
             Box(
@@ -445,16 +456,15 @@ fun BrowseScreen(
                         key = { index, folder -> "f:$index:${folder.url}" },
                     ) { index, folder ->
                         FolderRow(folder) { onOpenFolder(folder) }
-                        if (tracks.isNotEmpty() || folder != listing.folders.last()) {
+                        if (listing.tracks.isNotEmpty() || folder != listing.folders.last()) {
                             DividerLine(insetStart = 62.dp)
                         }
                     }
                     itemsIndexed(
                         visible,
-                        key = { index, item -> "t:$index:${item.value.id}" },
-                    ) { rowIndex, indexed ->
-                        val index = rowIndex
-                        val track = indexed.value
+                        key = { _, original -> "t:$original:${listing.tracks[original].url}" },
+                    ) { rowIndex, original ->
+                        val track = listing.tracks[original].toUi()
                         TrackRow(
                             track = track,
                             onClick = {
@@ -464,44 +474,27 @@ fun BrowseScreen(
                                     // Leave the search so the folder shows and marks
                                     // the song the user just picked.
                                     if (query.isNotBlank()) query = ""
-                                    onPlayTrack(
-                                        originalIndex.getOrElse(indexed.index) { indexed.index },
-                                    )
+                                    onPlayTrack(original)
                                 }
                             },
-                            showDivider = index != visible.lastIndex,
+                            showDivider = rowIndex != visible.lastIndex,
                             isCurrent = track.id == currentUrl,
                             isFavorite = favoriteUrls.contains(track.id),
                             selected = track.id in selection,
                             highlighted = track.id == highlightUrl,
                             onToggleFavorite = onToggleFavorite?.let { toggle ->
-                                {
-                                    val original = originalIndex.getOrElse(indexed.index) {
-                                        indexed.index
-                                    }
-                                    toggle(listing.tracks[original])
-                                }
+                                { toggle(listing.tracks[original]) }
                             },
                             onLongClick = { toggleSelection(track.id) },
                             onSwipeLeft = if (selecting) {
                                 null
                             } else if (playlistId != null) {
                                 onRemoveFromPlaylist?.let { remove ->
-                                    {
-                                        val original = originalIndex.getOrElse(indexed.index) {
-                                            indexed.index
-                                        }
-                                        remove(listing.tracks[original])
-                                    }
+                                    { remove(listing.tracks[original]) }
                                 }
                             } else {
                                 onAddTrackToPlaylist?.let { add ->
-                                    {
-                                        val original = originalIndex.getOrElse(indexed.index) {
-                                            indexed.index
-                                        }
-                                        add(listing.tracks[original])
-                                    }
+                                    { add(listing.tracks[original]) }
                                 }
                             },
                         )
@@ -587,6 +580,7 @@ private fun FolderCover(listing: Listing) {
             corner = 13.dp,
             artKey = artKey,
             artUri = artUri,
+            thumb = true,
         )
     }
 }
@@ -633,17 +627,28 @@ private fun fileName(value: String): String {
     }
 }
 
+/** Drops the folder name when it is shown as a fake album (percent-encoded). */
+private fun cleanAlbum(album: String, url: String): String {
+    val decoded = decodePercent(album).trim()
+    if (decoded.isEmpty()) return ""
+    val folder = decodePercent(url.substringBeforeLast('/').substringAfterLast('/')).trim()
+    return if (decoded.equals(folder, ignoreCase = true)) "" else decoded
+}
+
+private fun decodePercent(value: String): String =
+    if (value.contains("%")) {
+        runCatching { java.net.URLDecoder.decode(value, "UTF-8") }.getOrDefault(value)
+    } else {
+        value
+    }
+
 private fun TrackEntry.toUi(): Track = Track(
     id = url,
     title = title,
     artist = artist,
-    album = album,
+    album = cleanAlbum(album, url),
     duration = if (durationMs > 0) formatMs(durationMs) else "",
     art = (url.hashCode() and 0x7fffffff) % 8 + 1,
     artKey = artKey,
     artUri = artUri,
 )
-
-@Composable
-private fun remember2(listing: Listing): List<Track> =
-    androidx.compose.runtime.remember(listing.url, listing.tracks) { listing.tracks.map { it.toUi() } }

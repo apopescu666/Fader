@@ -55,9 +55,17 @@ private fun brushFor(index: Int): Brush =
  * memory LRU so scrolling never re-decodes the same cover.
  */
 object ArtworkLoader {
-    private const val MAX_BYTES = 24 * 1024 * 1024
+    // The player needs a big cover; list rows need a small one. Two caches let
+    // a big folder keep hundreds of thumbnails in memory instead of ~24 covers.
+    private const val MAX_FULL_BYTES = 16 * 1024 * 1024
+    private const val MAX_THUMB_BYTES = 24 * 1024 * 1024
+    private const val FULL_PX = 512
+    private const val THUMB_PX = 160
 
-    private val memory = object : LruCache<String, Bitmap>(MAX_BYTES) {
+    private val full = object : LruCache<String, Bitmap>(MAX_FULL_BYTES) {
+        override fun sizeOf(key: String, value: Bitmap): Int = value.allocationByteCount
+    }
+    private val thumbs = object : LruCache<String, Bitmap>(MAX_THUMB_BYTES) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.allocationByteCount
     }
     private val inFlight = ConcurrentHashMap.newKeySet<String>()
@@ -65,11 +73,15 @@ object ArtworkLoader {
     private val waiters = ConcurrentHashMap<String, MutableList<(Bitmap?) -> Unit>>()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    fun cached(key: String): Bitmap? = memory.get(key)
+    private fun cache(thumb: Boolean): LruCache<String, Bitmap> = if (thumb) thumbs else full
+    private fun requestKey(key: String, thumb: Boolean) = if (thumb) "t:$key" else key
+    private fun target(thumb: Boolean) = if (thumb) THUMB_PX else FULL_PX
+
+    fun cached(key: String, thumb: Boolean = false): Bitmap? = cache(thumb).get(key)
 
     /** Average cover colour, darkened so it can sit behind text. */
     fun dominantColor(key: String): androidx.compose.ui.graphics.Color? {
-        val bitmap = memory.get(key) ?: return null
+        val bitmap = full.get(key) ?: return null
         var red = 0.0
         var green = 0.0
         var blue = 0.0
@@ -104,125 +116,120 @@ object ArtworkLoader {
         )
     }
 
+    /** Common plumbing: memory hit, de-duplicated in-flight request, cache write. */
+    private fun loadInto(
+        key: String,
+        thumb: Boolean,
+        onLoaded: (Bitmap?) -> Unit,
+        fetch: suspend (Int) -> Bitmap?,
+    ) {
+        val memory = cache(thumb)
+        memory.get(key)?.let {
+            onLoaded(it)
+            return
+        }
+        val request = requestKey(key, thumb)
+        waiters.computeIfAbsent(request) { java.util.concurrent.CopyOnWriteArrayList() }.add(onLoaded)
+        if (!inFlight.add(request)) return
+        scope.launch {
+            val bitmap = runCatching { fetch(target(thumb)) }.getOrNull()
+            inFlight.remove(request)
+            if (bitmap != null) memory.put(key, bitmap)
+            val pending = waiters.remove(request)
+            withContext(Dispatchers.Main) { pending?.forEach { it(bitmap) } }
+        }
+    }
+
     /** Remote covers (http/https) are fetched with the share's auth header. */
     fun loadRemote(
         context: Context,
         key: String,
         url: String,
         authHeader: String?,
+        thumb: Boolean = false,
         onLoaded: (Bitmap?) -> Unit,
     ) {
-        memory.get(key)?.let {
-            onLoaded(it)
-            return
-        }
-        waiters.computeIfAbsent(key) { java.util.concurrent.CopyOnWriteArrayList() }.add(onLoaded)
-        if (!inFlight.add(key)) return
-        val client = http
-        scope.launch {
-            val bitmap = runCatching {
-                val builder = Request.Builder().url(url)
-                if (authHeader != null) builder.header("Authorization", authHeader)
-                val bytes = client.newCall(builder.build()).execute().use { response ->
-                    if (!response.isSuccessful) null else response.body?.bytes()
-                } ?: return@runCatching null
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-                var sample = 1
-                while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 512) sample *= 2
-                BitmapFactory.decodeByteArray(
-                    bytes, 0, bytes.size,
-                    BitmapFactory.Options().apply { inSampleSize = sample },
-                )
-            }.getOrNull()
-            inFlight.remove(key)
-            if (bitmap != null) memory.put(key, bitmap)
-            val pending = waiters.remove(key)
-            withContext(Dispatchers.Main) { pending?.forEach { it(bitmap) } }
+        loadInto(key, thumb, onLoaded) { target ->
+            val builder = Request.Builder().url(url)
+            if (authHeader != null) builder.header("Authorization", authHeader)
+            val bytes = http.newCall(builder.build()).execute().use { response ->
+                if (!response.isSuccessful) null else response.body?.bytes()
+            } ?: return@loadInto null
+            decodeBytes(bytes, target)
         }
     }
 
     /** Remote track whose picture lives inside the file: extract on demand. */
-    fun loadTrack(context: Context, key: String, trackUrl: String, onLoaded: (Bitmap?) -> Unit) {
-        memory.get(key)?.let {
-            onLoaded(it)
-            return
-        }
-        waiters.computeIfAbsent(key) { java.util.concurrent.CopyOnWriteArrayList() }.add(onLoaded)
-        if (!inFlight.add(key)) return
-        scope.launch {
+    fun loadTrack(
+        context: Context,
+        key: String,
+        trackUrl: String,
+        thumb: Boolean = false,
+        onLoaded: (Bitmap?) -> Unit,
+    ) {
+        loadInto(key, thumb, onLoaded) { target ->
             val path = runCatching { com.fader.mobil.core.RemoteLibrary.coverPath(trackUrl) }.getOrNull()
-            var bitmap = path?.let { decodeSampled(it) }
-            if (bitmap == null) {
-                val folderCover = com.fader.mobil.core.RemoteLibrary.folderCover(trackUrl)
-                if (folderCover != null) bitmap = fetch(folderCover)
+            val bitmap = path?.let { decodeSampled(it, target) }
+            if (bitmap != null) {
+                bitmap
+            } else {
+                com.fader.mobil.core.RemoteLibrary.folderCover(trackUrl)?.let { fetch(it, target) }
             }
-            inFlight.remove(key)
-            if (bitmap != null) memory.put(key, bitmap)
-            val pending = waiters.remove(key)
-            withContext(Dispatchers.Main) { pending?.forEach { it(bitmap) } }
         }
     }
 
     /** Downloads a cover image with the share credentials and decodes it. */
-    private fun fetch(url: String): Bitmap? = runCatching {
+    private fun fetch(url: String, maxPx: Int): Bitmap? = runCatching {
         val builder = Request.Builder().url(url)
         com.fader.mobil.core.RemoteLibrary.authHeader?.let { builder.header("Authorization", it) }
         val bytes = http.newCall(builder.build()).execute().use { response ->
             if (!response.isSuccessful) null else response.body?.bytes()
         } ?: return null
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-        var sample = 1
-        while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 512) sample *= 2
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
+        decodeBytes(bytes, maxPx)
     }.getOrNull()
 
-    private fun decodeSampled(path: String): Bitmap? {
+    private fun decodeBytes(bytes: ByteArray, maxPx: Int): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / sample > maxPx) sample *= 2
+        return BitmapFactory.decodeByteArray(
+            bytes, 0, bytes.size,
+            BitmapFactory.Options().apply { inSampleSize = sample },
+        )
+    }
+
+    private fun decodeSampled(path: String, maxPx: Int): Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(path, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
         var sample = 1
-        while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 512) sample *= 2
+        while (maxOf(bounds.outWidth, bounds.outHeight) / sample > maxPx) sample *= 2
         return BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
     }
 
     /** Cover already extracted to the app cache. */
-    fun loadFile(context: Context, key: String, path: String, onLoaded: (Bitmap?) -> Unit) {
-        memory.get(key)?.let {
-            onLoaded(it)
-            return
-        }
-        waiters.computeIfAbsent(key) { java.util.concurrent.CopyOnWriteArrayList() }.add(onLoaded)
-        if (!inFlight.add(key)) return
-        scope.launch {
-            val bitmap = runCatching { decodeSampled(path) }.getOrNull()
-            inFlight.remove(key)
-            if (bitmap != null) memory.put(key, bitmap)
-            val pending = waiters.remove(key)
-            withContext(Dispatchers.Main) { pending?.forEach { it(bitmap) } }
-        }
+    fun loadFile(
+        context: Context,
+        key: String,
+        path: String,
+        thumb: Boolean = false,
+        onLoaded: (Bitmap?) -> Unit,
+    ) {
+        loadInto(key, thumb, onLoaded) { target -> decodeSampled(path, target) }
     }
 
-    fun load(context: Context, key: String, uri: String, onLoaded: (Bitmap?) -> Unit) {
-        memory.get(key)?.let {
-            onLoaded(it)
-            return
-        }
-        // Several visible rows often share an album: every caller gets the result.
-        waiters.computeIfAbsent(key) { java.util.concurrent.CopyOnWriteArrayList() }.add(onLoaded)
-        if (!inFlight.add(key)) return
+    fun load(
+        context: Context,
+        key: String,
+        uri: String,
+        thumb: Boolean = false,
+        onLoaded: (Bitmap?) -> Unit,
+    ) {
         val resolver = context.applicationContext.contentResolver
-        scope.launch {
-            val bitmap = runCatching {
-                resolver.loadThumbnail(Uri.parse(uri), Size(512, 512), null)
-            }.getOrNull()
-            inFlight.remove(key)
-            if (bitmap != null) memory.put(key, bitmap)
-            val pending = waiters.remove(key)
-            withContext(Dispatchers.Main) {
-                pending?.forEach { it(bitmap) }
-            }
+        loadInto(key, thumb, onLoaded) { target ->
+            resolver.loadThumbnail(Uri.parse(uri), Size(target, target), null)
         }
     }
 }
@@ -236,28 +243,30 @@ fun Artwork(
     corner: Dp = 12.dp,
     artKey: String? = null,
     artUri: String? = null,
+    thumb: Boolean = false,
 ) {
     val context = LocalContext.current
-    var bitmap by remember(artKey) {
-        mutableStateOf(artKey?.let { ArtworkLoader.cached(it) })
+    var bitmap by remember(artKey, thumb) {
+        mutableStateOf(artKey?.let { ArtworkLoader.cached(it, thumb) })
     }
 
-    LaunchedEffect(artKey, artUri) {
+    LaunchedEffect(artKey, artUri, thumb) {
         if (bitmap == null && artKey != null && artUri != null) {
             if (artUri.startsWith("http")) {
-                ArtworkLoader.loadRemote(context, artKey, artUri, com.fader.mobil.core.RemoteLibrary.authHeader) { loaded ->
-                    if (loaded != null) bitmap = loaded
-                }
+                ArtworkLoader.loadRemote(
+                    context, artKey, artUri,
+                    com.fader.mobil.core.RemoteLibrary.authHeader, thumb,
+                ) { loaded -> if (loaded != null) bitmap = loaded }
             } else if (artUri.startsWith("remote:")) {
-                ArtworkLoader.loadTrack(context, artKey, artUri.removePrefix("remote:")) { loaded ->
-                    if (loaded != null) bitmap = loaded
-                }
+                ArtworkLoader.loadTrack(
+                    context, artKey, artUri.removePrefix("remote:"), thumb,
+                ) { loaded -> if (loaded != null) bitmap = loaded }
             } else if (artUri.startsWith("file:")) {
-                ArtworkLoader.loadFile(context, artKey, artUri.removePrefix("file:")) { loaded ->
-                    if (loaded != null) bitmap = loaded
-                }
+                ArtworkLoader.loadFile(
+                    context, artKey, artUri.removePrefix("file:"), thumb,
+                ) { loaded -> if (loaded != null) bitmap = loaded }
             } else {
-                ArtworkLoader.load(context, artKey, artUri) { loaded ->
+                ArtworkLoader.load(context, artKey, artUri, thumb) { loaded ->
                     if (loaded != null) bitmap = loaded
                 }
             }

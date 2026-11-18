@@ -12,7 +12,10 @@ object TrackQueue {
         val local = LocalLibrary.localClient()
 
         val items = urls.mapIndexed { position, url ->
-            val entry = Entry(url.substringAfterLast('/'), url, false, 0, 0)
+            val entry = Entry(
+                RemoteLibrary.decodeName(url.substringAfterLast('/')),
+                url, false, 0, 0,
+            )
             // Older saves sometimes carry a wrong remote flag, so the URL wins.
             val isRemote = url.startsWith("http://") || url.startsWith("https://") ||
                 remoteFlags.getOrElse(position) { false }

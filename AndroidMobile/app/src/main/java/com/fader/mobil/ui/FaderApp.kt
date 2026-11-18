@@ -110,7 +110,9 @@ private fun favoriteFrom(listing: Listing, entry: TrackEntry): Favorite = Favori
 private fun playlistListing(playlist: Playlist): Listing {
     val tracks = playlist.tracks.map { track ->
         TrackEntry(
-            name = track.url.substringAfterLast('/'),
+            name = com.fader.mobil.core.RemoteLibrary.decodeName(
+                track.url.substringAfterLast('/'),
+            ),
             title = track.title,
             artist = track.artist,
             album = track.album,
@@ -126,7 +128,9 @@ private fun playlistListing(playlist: Playlist): Listing {
 private fun favoritesListing(favorites: List<Favorite>): Listing {
     val tracks = favorites.map { favorite ->
         TrackEntry(
-            name = favorite.url.substringAfterLast('/'),
+            name = com.fader.mobil.core.RemoteLibrary.decodeName(
+                favorite.url.substringAfterLast('/'),
+            ),
             title = favorite.title,
             artist = favorite.artist,
             album = favorite.album,
@@ -185,11 +189,16 @@ fun FaderApp() {
     var queueRemoteFlags by remember { mutableStateOf<List<Boolean>>(emptyList()) }
     var queueUrls by remember { mutableStateOf<List<String>>(emptyList()) }
     var refreshToken by remember { mutableStateOf(0) }
+    var lastRefreshToken by remember { mutableStateOf(0) }
     var queueVersion by remember { mutableStateOf(0) }
     var userQueue by remember { mutableStateOf(QueueStore.all(context)) }
     var focusTrackUrl by remember { mutableStateOf<String?>(null) }
     var focusFolderUrl by remember { mutableStateOf<String?>(null) }
-    var shuffleState by remember { mutableStateOf(com.fader.mobil.core.FaderPlayer.shuffle) }
+    var shuffleState by remember {
+        mutableStateOf(
+            com.fader.mobil.data.SettingsStore.shuffle(context),
+        )
+    }
     var showClearFavorites by remember { mutableStateOf(false) }
     var showTrackInfo by remember { mutableStateOf(false) }
     var restored by remember { mutableStateOf(false) }
@@ -347,18 +356,75 @@ fun FaderApp() {
             loadError = if (playlist == null) "Playlist not found" else null
             return@LaunchedEffect
         }
-        listing = null
-        loading = true
-        loadError = null
-        val result = runCatching {
-            if (current.remote) {
-                RemoteLibrary.listing(current.url, current.name)
-            } else {
-                withContext(Dispatchers.IO) { LocalLibrary.listing(current.url, current.name) }
-            }
+        // Show what we already have — memory cache first, then the on-disk NAS
+        // index — instead of an empty screen, and refresh in the background.
+        val forced = refreshToken != lastRefreshToken
+        lastRefreshToken = refreshToken
+        val cachedAge = com.fader.mobil.core.ListingCache.age(current.url)
+        val cached = if (cachedAge != null) {
+            com.fader.mobil.core.ListingCache.get(current.url)
+        } else {
+            null
         }
-        listing = result.getOrNull()
-        loadError = result.exceptionOrNull()?.let { it.message ?: "Could not open folder" }
+        if (cached != null) {
+            listing = cached
+            loading = false
+            loadError = null
+        } else {
+            listing = null
+            loading = true
+            loadError = null
+        }
+        val indexed = if (cached == null && current.remote) {
+            withContext(Dispatchers.IO) {
+                com.fader.mobil.core.NasStore.loadListing(context, current.url)
+            }
+        } else {
+            null
+        }
+        val immediate = cached ?: indexed
+        if (indexed != null) {
+            listing = indexed
+            loading = false
+        }
+        val freshFor = if ((cached?.tracks?.size ?: 0) > 10_000) 5 * 60_000L else 15_000L
+        if (!forced && cachedAge != null && cachedAge < freshFor) return@LaunchedEffect
+        if (current.remote) com.fader.mobil.core.NasScanner.setUserBusy(true)
+        val result = try {
+            runCatching {
+                if (current.remote) {
+                    RemoteLibrary.listing(current.url, current.name)
+                } else {
+                    withContext(Dispatchers.IO) { LocalLibrary.listing(current.url, current.name) }
+                }
+            }
+        } finally {
+            if (current.remote) com.fader.mobil.core.NasScanner.setUserBusy(false)
+        }
+        val fresh = result.getOrNull()
+        if (fresh != null) {
+            com.fader.mobil.core.ListingCache.put(current.url, fresh)
+            val changed = immediate == null ||
+                com.fader.mobil.core.ListingCache.signature(immediate) !=
+                com.fader.mobil.core.ListingCache.signature(fresh)
+            if (changed) {
+                if (current.remote) {
+                    withContext(Dispatchers.IO) {
+                        com.fader.mobil.core.NasStore.saveListing(context, fresh)
+                    }
+                }
+                listing = fresh
+            } else if (current.remote) {
+                withContext(Dispatchers.IO) {
+                    com.fader.mobil.core.NasStore.touch(context, current.url)
+                }
+            }
+            // Read the subfolders in the background, so the next click is instant.
+            if (current.remote) com.fader.mobil.core.NasScanner.prescan(context, fresh)
+            loadError = null
+        } else if (immediate == null) {
+            loadError = result.exceptionOrNull()?.message ?: "Could not open folder"
+        }
         loading = false
     }
 
@@ -519,17 +585,18 @@ fun FaderApp() {
         }
     }
 
+    var savedQueueSignature by remember { mutableStateOf<String?>(null) }
+
     fun saveSession() {
         val url = playback.url ?: return
         val folder = playingPath.lastOrNull()
-        val entries = runCatching { com.fader.mobil.core.FaderPlayer.queueEntries() }
-            .getOrDefault(emptyList())
+        val position = playback.positionMs
         if (folder != null) {
             UiState.savePlayback(
                 context,
                 SavedPlayback(
                     trackUrl = url,
-                    positionMs = playback.positionMs,
+                    positionMs = position,
                     folderUrl = folder.url,
                     folderName = folder.name,
                     remote = folder.remote,
@@ -538,21 +605,32 @@ fun FaderApp() {
                 ),
             )
         }
-        if (entries.isEmpty()) return
-        val index = entries.indexOfFirst { it.url == url }.coerceAtLeast(0)
-        PlaybackSessionStore.save(
-            context,
-            PlaybackSession(
-                folderUrl = playingListing?.url ?: folder?.url.orEmpty(),
-                folderName = playingListing?.name ?: folder?.name.orEmpty(),
-                remote = playingListing?.remote ?: folder?.remote ?: false,
-                tracks = entries.map { entry ->
-                    SessionTrack(entry.url, entry.title, entry.artist, entry.remote)
-                },
-                index = index,
-                positionMs = playback.positionMs,
-            ),
-        )
+        val folderUrl = playingListing?.url ?: folder?.url.orEmpty()
+        val folderName = playingListing?.name ?: folder?.name.orEmpty()
+        val remote = playingListing?.remote ?: folder?.remote ?: false
+        // The list itself changes rarely: writing 10 000 tracks every five
+        // seconds was what made big folders crawl.
+        val signature = com.fader.mobil.core.FaderPlayer.queueSignature() + "|" + folderUrl
+        if (signature != savedQueueSignature) {
+            savedQueueSignature = signature
+            val entries = runCatching { com.fader.mobil.core.FaderPlayer.queueEntries() }
+                .getOrDefault(emptyList())
+            if (entries.isEmpty()) return
+            val index = entries.indexOfFirst { it.url == url }.coerceAtLeast(0)
+            val tracks = entries.map { entry ->
+                SessionTrack(entry.url, entry.title, entry.artist, entry.remote)
+            }
+            scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                PlaybackSessionStore.saveQueue(context, folderUrl, folderName, remote, tracks)
+                PlaybackSessionStore.savePosition(context, index, position)
+            }
+        } else {
+            PlaybackSessionStore.savePosition(
+                context,
+                com.fader.mobil.core.FaderPlayer.queueIndex,
+                position,
+            )
+        }
     }
 
     LaunchedEffect(playback.url) {
@@ -668,6 +746,101 @@ fun FaderApp() {
         if (playingPath.isNotEmpty()) stack = playingPath
     }
 
+    /** Opens the list the song was started from and scrolls to that song. */
+    fun openSource() {
+        expanded = false
+        tab = Tab.Library
+        val container = com.fader.mobil.core.FaderPlayer.currentContainer
+        when {
+            com.fader.mobil.core.FaderPlayer.inUserQueue -> {
+                tab = Tab.Queue
+            }
+            playingListing?.url == "search://" -> {
+                tab = Tab.Library
+                showSearch = true
+            }
+            com.fader.mobil.core.FaderPlayer.playingExternal -> {
+                // The car queue may not carry the container extra: derive it
+                // from the playing URL instead of jumping to the phone's last
+                // folder.
+                val target = container
+                    ?: playback.url?.let {
+                        com.fader.mobil.core.SessionItems.folderContainerFor(it)
+                    }
+                if (target != null) {
+                    tab = Tab.Library
+                    openContainer(target)
+                    focusTrackUrl = playback.url
+                } else if (playingPath.isNotEmpty()) {
+                    tab = Tab.Library
+                    stack = playingPath
+                    focusFolderUrl = playingPath.lastOrNull()?.url
+                    focusTrackUrl = playback.url
+                }
+            }
+            playingPath.isNotEmpty() -> {
+                tab = Tab.Library
+                stack = playingPath
+                // Without this the list opened but the playing song was not
+                // scrolled to / highlighted.
+                focusFolderUrl = playingPath.lastOrNull()?.url
+                focusTrackUrl = playback.url
+            }
+            container != null -> openContainer(container)
+            else -> {
+                val saved = UiState.source(context)
+                if (saved != null) {
+                    tab = Tab.Library
+                    stack = listOf(NavFolder(saved.url, saved.name, saved.remote))
+                    focusFolderUrl = saved.url
+                    focusTrackUrl = playback.url
+                } else {
+                    tab = Tab.Library
+                    toast("Source list unavailable for this track")
+                }
+            }
+        }
+    }
+
+    /**
+     * One step back. When the stack has a single entry (session restore, song
+     * opened from search/queue) the parent is derived from the folder URL, so
+     * Back lands in the real parent folder instead of jumping to the home.
+     */
+    fun goBack() {
+        var next = stack.dropLast(1)
+        val current = stack.lastOrNull()?.url
+        while (next.isNotEmpty() && next.last().url == current) {
+            next = next.dropLast(1)
+        }
+        if (next.isEmpty() && current != null) {
+            val trimmed = current.trimEnd('/')
+            val parent = trimmed.substringBeforeLast('/', "")
+            val root = if (current.startsWith("/local/")) {
+                "/local"
+            } else {
+                com.fader.mobil.core.RemoteLibrary.rootUrl?.trimEnd('/')
+            }
+            val safeParent = when {
+                parent.isEmpty() -> null
+                root != null && parent.length < root.length -> root
+                parent == trimmed -> null
+                else -> parent
+            }
+            if (safeParent != null && safeParent != trimmed) {
+                val remote = !current.startsWith("/local/")
+                val name = if (!remote && safeParent == "/local") {
+                    "On this phone"
+                } else {
+                    safeParent.trimEnd('/').substringAfterLast('/')
+                        .ifBlank { if (remote) "NAS" else "On this phone" }
+                }
+                next = listOf(NavFolder("$safeParent/", name, remote))
+            }
+        }
+        stack = next
+    }
+
     var lastShownError by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(playback.error) {
         val error = playback.error
@@ -691,7 +864,7 @@ fun FaderApp() {
             showSearch -> showSearch = false
             // Back from Queue/Settings returns to the list you were browsing.
             tab != Tab.Library -> tab = Tab.Library
-            stack.isNotEmpty() -> stack = stack.dropLast(1)
+            stack.isNotEmpty() -> goBack()
             else -> tab = Tab.Library
         }
     }
@@ -883,6 +1056,7 @@ fun FaderApp() {
                         onToggleShuffle = {
                             shuffleState = !shuffleState
                             com.fader.mobil.core.FaderPlayer.setShuffle(shuffleState)
+                            com.fader.mobil.data.SettingsStore.setShuffle(context, shuffleState)
                         },
                         onPlayFolder = {
                             listing?.let { current ->
@@ -905,10 +1079,12 @@ fun FaderApp() {
                         },
                         favoriteUrls = remember(favorites) { favorites.map { it.url }.toSet() },
                         onToggleFavorite = { entry: TrackEntry -> toggleFavorite(entry, listing!!) },
-                        onBack = { stack = stack.dropLast(1) },
+                        onBack = { goBack() },
                         onOpenFolder = { folder ->
                             val target = if (top.remote) folder else LocalLibrary.redirect(folder)
-                            stack = stack + NavFolder(target.url, target.name, top.remote)
+                            if (stack.lastOrNull()?.url != target.url) {
+                                stack = stack + NavFolder(target.url, target.name, top.remote)
+                            }
                         },
                         onPlayTrack = { index -> playTrack(index) },
                         onAddToPlaylist = {
@@ -1093,6 +1269,10 @@ fun FaderApp() {
                             onPrevious = { FaderPlayer.previous() },
                             onNext = { FaderPlayer.next() },
                             onOpen = { expanded = true },
+                            onSeek = { fraction ->
+                                FaderPlayer.seekTo((playback.durationMs * fraction).toInt())
+                            },
+                            onOpenSource = { openSource() },
                         )
                         Spacer(Modifier.height(8.dp))
                     }
@@ -1365,39 +1545,7 @@ fun FaderApp() {
                         isFavorite = favorites.any { it.url == playback.url },
                         isShuffle = shuffleState,
                         repeat = com.fader.mobil.core.FaderPlayer.repeatMode,
-                        onOpenSource = {
-                            expanded = false
-                            // Whatever the source, leave the current tab (Settings,
-                            // Queue, ...) so the list is actually visible.
-                            tab = Tab.Library
-                            val container = com.fader.mobil.core.FaderPlayer.currentContainer
-                            when {
-                                com.fader.mobil.core.FaderPlayer.inUserQueue -> {
-                                    tab = Tab.Queue
-                                }
-                                playingListing?.url == "search://" -> {
-                                    tab = Tab.Library
-                                    showSearch = true
-                                }
-                                com.fader.mobil.core.FaderPlayer.playingExternal && container != null ->
-                                    openContainer(container)
-                                playingPath.isNotEmpty() -> {
-                                    tab = Tab.Library
-                                    stack = playingPath
-                                }
-                                container != null -> openContainer(container)
-                                else -> {
-                                    val saved = UiState.source(context)
-                                    if (saved != null) {
-                                        tab = Tab.Library
-                                        stack = listOf(NavFolder(saved.url, saved.name, saved.remote))
-                                    } else {
-                                        tab = Tab.Library
-                                        toast("Source list unavailable for this track")
-                                    }
-                                }
-                            }
-                        },
+                        onOpenSource = { openSource() },
                         onToggleFavorite = {
                             val url = playback.url
                             if (url != null && playback.title != null) {
@@ -1425,6 +1573,7 @@ fun FaderApp() {
                         onToggleShuffle = {
                             shuffleState = !shuffleState
                             com.fader.mobil.core.FaderPlayer.setShuffle(shuffleState)
+                            com.fader.mobil.data.SettingsStore.setShuffle(context, shuffleState)
                         },
                         onCycleRepeat = { com.fader.mobil.core.FaderPlayer.cycleRepeat() },
                         onAddToPlaylist = {

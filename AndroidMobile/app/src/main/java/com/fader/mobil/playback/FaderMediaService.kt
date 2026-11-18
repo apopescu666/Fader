@@ -19,6 +19,7 @@ import com.fader.mobil.core.LocalLibrary
 import com.fader.mobil.core.RemoteLibrary
 import com.fader.mobil.core.Search
 import com.fader.mobil.core.SearchHit
+import com.fader.mobil.core.SessionItems
 import com.fader.mobil.core.WebDavCredentials
 import com.fader.mobil.data.Favorite
 import com.fader.mobil.data.FavoritesStore
@@ -51,10 +52,12 @@ class FaderMediaService : MediaLibraryService() {
         super.onCreate()
         FaderPlayer.init(this)
         RemoteLibrary.init(this)
-        val player = FaderPlayer.engine() ?: return
+        FaderPlayer.setShuffle(com.fader.mobil.data.SettingsStore.shuffle(this))
+        FaderPlayer.applyCrossfade(com.fader.mobil.data.SettingsStore.fade(this))
+        val player = FaderPlayer.sessionPlayer ?: return
         librarySession = MediaLibrarySession.Builder(this, player, callback)
             .setBitmapLoader(artLoader)
-            .setCustomLayout(listOf(favoriteButton(), shuffleButton()))
+            .setCustomLayout(listOf(favoriteButton(), shuffleButton(), repeatButton()))
             .build()
         lastPlayer = player
         FaderPlayer.addListener(engineWatcher)
@@ -99,6 +102,7 @@ class FaderMediaService : MediaLibraryService() {
             remote = remote,
         )
         FavoritesStore.toggle(this, favorite)
+        refreshCustomLayout()
     }
 
     private fun canReadAudio(): Boolean {
@@ -110,15 +114,70 @@ class FaderMediaService : MediaLibraryService() {
         return ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
     }
 
-    private fun favoriteButton(): CommandButton = CommandButton.Builder()
-        .setDisplayName("Favorite")
-        .setIconResId(com.fader.mobil.R.drawable.ic_favorite)
-        .setSessionCommand(SessionCommand(CMD_FAVORITE, Bundle.EMPTY))
-        .build()
+    private var lastLayoutKey: String? = null
+
+    private fun isCurrentFavorite(): Boolean {
+        val url = FaderPlayer.currentUrl ?: return false
+        return runCatching {
+            FavoritesStore.all(this).any { it.url == url }
+        }.getOrDefault(false)
+    }
+
+    private fun refreshCustomLayout() {
+        val session = librarySession ?: return
+        val key = listOf(
+            FaderPlayer.currentUrl,
+            isCurrentFavorite(),
+            FaderPlayer.shuffle,
+            FaderPlayer.repeatMode,
+        ).joinToString("|")
+        if (key == lastLayoutKey) return
+        lastLayoutKey = key
+        runCatching { session.setCustomLayout(listOf(favoriteButton(), shuffleButton(), repeatButton())) }
+    }
+
+    private fun favoriteButton(): CommandButton {
+        val favorite = isCurrentFavorite()
+        return CommandButton.Builder()
+            .setDisplayName(if (favorite) "Favorite: remove" else "Favorite: add")
+            .setIconResId(
+                if (favorite) com.fader.mobil.R.drawable.ic_favorite_red
+                else com.fader.mobil.R.drawable.ic_favorite_outline,
+            )
+            .setSessionCommand(SessionCommand(CMD_FAVORITE, Bundle.EMPTY))
+            .build()
+    }
+
+    private fun repeatButton(): CommandButton {
+        val mode = FaderPlayer.repeatMode
+        // Standard Media3 icons: Android Auto renders them with a clear
+        // active/inactive shape, unlike a custom drawable it may tint.
+        val icon = when (mode) {
+            2 -> CommandButton.ICON_REPEAT_ONE
+            1 -> CommandButton.ICON_REPEAT_ALL
+            else -> CommandButton.ICON_REPEAT_OFF
+        }
+        val label = when (mode) {
+            2 -> "Repeat: one"
+            1 -> "Repeat: all"
+            else -> "Repeat: off"
+        }
+        return CommandButton.Builder()
+            .setDisplayName(label)
+            .setIconResId(icon)
+            .setSessionCommand(SessionCommand(CMD_REPEAT, Bundle.EMPTY))
+            .build()
+    }
 
     private fun shuffleButton(): CommandButton = CommandButton.Builder()
-        .setDisplayName("Shuffle")
-        .setIconResId(com.fader.mobil.R.drawable.ic_shuffle)
+        .setDisplayName(if (FaderPlayer.shuffle) "Shuffle: on" else "Shuffle: off")
+        .setIconResId(
+            if (FaderPlayer.shuffle) {
+                CommandButton.ICON_SHUFFLE_ON
+            } else {
+                CommandButton.ICON_SHUFFLE_OFF
+            },
+        )
         .setSessionCommand(SessionCommand(CMD_SHUFFLE, Bundle.EMPTY))
         .build()
 
@@ -148,6 +207,7 @@ class FaderMediaService : MediaLibraryService() {
 
     /** Crossfade swaps the underlying engine; the car session follows it. */
     private val engineWatcher = FaderPlayer.Listener {
+        refreshCustomLayout()
         val session = librarySession ?: return@Listener
         val player = FaderPlayer.sessionPlayer ?: return@Listener
         if (player !== lastPlayer) {
@@ -157,6 +217,11 @@ class FaderMediaService : MediaLibraryService() {
     }
 
     private val artPool = java.util.concurrent.Executors.newFixedThreadPool(2)
+
+    /** Covers already decoded for the car: scrolling lists no longer re-decodes. */
+    private val artCache = object : android.util.LruCache<String, android.graphics.Bitmap>(16 * 1024 * 1024) {
+        override fun sizeOf(key: String, value: android.graphics.Bitmap): Int = value.allocationByteCount
+    }
 
     /** Loads covers for the car: per-track embedded art, folder art as fallback. */
     private val artLoader = object : androidx.media3.common.util.BitmapLoader {
@@ -175,11 +240,16 @@ class FaderMediaService : MediaLibraryService() {
         }
 
         override fun loadBitmap(uri: android.net.Uri): ListenableFuture<android.graphics.Bitmap> {
+            artCache.get(uri.toString())?.let { return Futures.immediateFuture(it) }
             val future = SettableFuture.create<android.graphics.Bitmap>()
             artPool.execute {
                 val bitmap = runCatching { artworkFor(uri) }.getOrNull()
-                if (bitmap != null) future.set(bitmap)
-                else future.setException(java.io.IOException("No artwork for $uri"))
+                if (bitmap != null) {
+                    artCache.put(uri.toString(), bitmap)
+                    future.set(bitmap)
+                } else {
+                    future.setException(java.io.IOException("No artwork for $uri"))
+                }
             }
             return future
         }
@@ -213,7 +283,14 @@ class FaderMediaService : MediaLibraryService() {
                 carConnected = true
                 FaderPlayer.enterCarMode()
             }
-            return super.onConnect(session, controller)
+            val result = super.onConnect(session, controller)
+            val commands = result.availableSessionCommands
+                .buildUpon()
+                .add(SessionCommand(CMD_FAVORITE, Bundle.EMPTY))
+                .add(SessionCommand(CMD_SHUFFLE, Bundle.EMPTY))
+                .add(SessionCommand(CMD_REPEAT, Bundle.EMPTY))
+                .build()
+            return MediaSession.ConnectionResult.accept(commands, result.availablePlayerCommands)
         }
 
         override fun onDisconnected(session: MediaSession, controller: MediaSession.ControllerInfo) {
@@ -233,7 +310,8 @@ class FaderMediaService : MediaLibraryService() {
             session: MediaSession,
             controller: MediaSession.ControllerInfo,
         ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
-            val player = FaderPlayer.engine()
+            FaderPlayer.resetForCarPlayback()
+            val player = FaderPlayer.sessionPlayer
             if (player != null && player.mediaItemCount > 0) {
                 val items = (0 until player.mediaItemCount).map { player.getMediaItemAt(it) }
                 val index = player.currentMediaItemIndex.coerceIn(0, items.lastIndex)
@@ -331,15 +409,16 @@ class FaderMediaService : MediaLibraryService() {
             startIndex: Int,
             startPositionMs: Long,
         ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
-            val tapped = mediaItems.getOrNull(startIndex)
+            val tapped = mediaItems.getOrNull(startIndex) ?: mediaItems.firstOrNull()
             val container = tapped?.mediaMetadata?.extras?.getString(EXTRA_CONTAINER)
+                ?: tapped?.mediaId?.removePrefix("track:")?.let { folderContainerFor(it) }
             if (mediaItems.size == 1 && container != null) {
                 val future = SettableFuture.create<MediaSession.MediaItemsWithStartPosition>()
                 scope.launch {
                     runCatching {
-                        val tracks = containerTracks(container).let { list ->
-                            if (FaderPlayer.shuffle) list.shuffled() else list
-                        }
+                        // Shuffle is applied inside the engine, so the queue it
+                        // reports and the order it plays are always the same.
+                        val tracks = containerTracks(container)
                         val resolved = tracks.mapNotNull { track ->
                             FaderPlayer.mediaItemForSession(
                                 track.url,
@@ -347,6 +426,7 @@ class FaderMediaService : MediaLibraryService() {
                                 track.artist,
                                 track.album,
                                 track.artwork,
+                                container,
                             )?.let { track.url to it }
                         }
                         val items = resolved.map { it.second }
@@ -354,10 +434,12 @@ class FaderMediaService : MediaLibraryService() {
                             future.setException(java.io.IOException("Nothing to play"))
                             return@launch
                         }
-                        val tappedUrl = tapped.mediaId.removePrefix("track:")
+                        val tappedUrl = tapped?.mediaId?.removePrefix("track:").orEmpty()
                         val index = resolved.indexOfFirst { it.first == tappedUrl }
                             .coerceIn(0, items.lastIndex)
                         FaderPlayer.prepareExternalQueue()
+                        FaderPlayer.resetForCarPlayback()
+                        FaderPlayer.ensureBackgroundService()
                         future.set(
                             MediaSession.MediaItemsWithStartPosition(
                                 items,
@@ -371,9 +453,11 @@ class FaderMediaService : MediaLibraryService() {
             }
 
             val resolved = mediaItems.mapNotNull { item ->
-                runCatching { resolve(item.mediaId) }.getOrNull()
+                runCatching { resolve(item) }.getOrNull()
             }
             FaderPlayer.prepareExternalQueue()
+            FaderPlayer.resetForCarPlayback()
+            FaderPlayer.ensureBackgroundService()
             val index = startIndex.coerceIn(0, (resolved.size - 1).coerceAtLeast(0))
             return Futures.immediateFuture(
                 MediaSession.MediaItemsWithStartPosition(
@@ -399,7 +483,7 @@ class FaderMediaService : MediaLibraryService() {
                     if (needsRemote) ensureRemote()
                     loadLocalIfAllowed()
                     mediaItems.mapNotNull { item ->
-                        runCatching { resolve(item.mediaId) }.getOrNull()
+                        runCatching { resolve(item) }.getOrNull()
                     }.toMutableList()
                 }.onSuccess { resolved ->
                     if (resolved.isNotEmpty()) FaderPlayer.ensureBackgroundService()
@@ -419,8 +503,16 @@ class FaderMediaService : MediaLibraryService() {
                 toggleFavorite()
                 return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
             }
+            if (customCommand.customAction == CMD_REPEAT) {
+                FaderPlayer.cycleRepeat()
+                refreshCustomLayout()
+                return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+            }
             if (customCommand.customAction == CMD_SHUFFLE) {
-                FaderPlayer.setShuffle(!FaderPlayer.shuffle)
+                val enabled = !FaderPlayer.shuffle
+                FaderPlayer.setShuffle(enabled)
+                com.fader.mobil.data.SettingsStore.setShuffle(this@FaderMediaService, enabled)
+                refreshCustomLayout()
                 return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
             }
             return Futures.immediateFuture(SessionResult(SessionError.ERROR_NOT_SUPPORTED))
@@ -564,20 +656,55 @@ class FaderMediaService : MediaLibraryService() {
             val encoded = parentId.removePrefix("folder:")
             val remote = encoded.startsWith("http")
             val url = encoded.substringBefore("|")
-            val name = encoded.substringAfter("|", url.trimEnd('/').substringAfterLast('/'))
+            val name = com.fader.mobil.core.RemoteLibrary.decodeName(
+                encoded.substringAfter("|", url.trimEnd('/').substringAfterLast('/')),
+            )
             folderChildren(url, name, remote)
         }
 
         else -> emptyList()
     }
 
+    /**
+     * Folder contents for the car: memory cache, then the local database, then
+     * the network. Only the first visit pays the PROPFIND price.
+     */
+    private suspend fun folderListing(url: String, name: String): com.fader.mobil.core.Listing? =
+        withContext(Dispatchers.IO) {
+            com.fader.mobil.core.ListingCache.get(url)?.let { return@withContext it }
+            val stored = com.fader.mobil.core.NasStore.loadListing(this@FaderMediaService, url)
+            if (stored != null) {
+                com.fader.mobil.core.ListingCache.put(url, stored)
+                scope.launch {
+                    runCatching { RemoteLibrary.listing(url, name) }.getOrNull()?.let { fresh ->
+                        com.fader.mobil.core.ListingCache.put(url, fresh)
+                        withContext(Dispatchers.IO) {
+                            com.fader.mobil.core.NasStore.saveListing(this@FaderMediaService, fresh)
+                        }
+                    }
+                }
+                return@withContext stored
+            }
+            val fresh = runCatching { RemoteLibrary.listing(url, name) }.getOrNull()
+            if (fresh != null) {
+                com.fader.mobil.core.ListingCache.put(url, fresh)
+                withContext(Dispatchers.IO) {
+                    com.fader.mobil.core.NasStore.saveListing(this@FaderMediaService, fresh)
+                }
+            }
+            fresh
+        }
+
     private suspend fun folderChildren(url: String, name: String, remote: Boolean): List<MediaItem> =
         withContext(Dispatchers.IO) {
             if (remote) ensureRemote()
             if (!remote) loadLocalIfAllowed()
-            val listing = runCatching {
-                if (remote) RemoteLibrary.listing(url, name) else LocalLibrary.listing(url, name)
-            }.getOrNull() ?: return@withContext emptyList()
+            val listing = if (remote) {
+                folderListing(url, name) ?: return@withContext emptyList()
+            } else {
+                runCatching { LocalLibrary.listing(url, name) }.getOrNull()
+                    ?: return@withContext emptyList()
+            }
 
             val container = "folder|${if (remote) 1 else 0}|$url|$name"
 
@@ -595,6 +722,7 @@ class FaderMediaService : MediaLibraryService() {
                             remote = remote,
                             artUri = if (remote) null else track.artUri,
                             container = container,
+                            durationMs = track.durationMs,
                         ),
                     )
                 }
@@ -609,16 +737,25 @@ class FaderMediaService : MediaLibraryService() {
         remote: Boolean,
         artUri: String? = null,
         container: String? = null,
+        durationMs: Long = 0,
     ): MediaItem {
-        val artwork = artUri ?: if (remote) "remote:$url" else LocalLibrary.art(url)?.uri
+        // Android Auto can read this content:// URI from our provider.
+        val artwork = com.fader.mobil.data.CoverProvider.uriFor(url).toString()
         val extras = Bundle().apply {
             if (container != null) putString(EXTRA_CONTAINER, container)
+            if (durationMs > 0) putLong(EXTRA_DURATION, durationMs)
         }
         return MediaItem.Builder()
             .setMediaId("track:$url")
             .setMediaMetadata(
                 MediaMetadata.Builder()
-                    .setTitle(title.ifBlank { url.substringAfterLast('/') })
+                    .setTitle(
+                        title.ifBlank {
+                            com.fader.mobil.core.RemoteLibrary.decodeName(
+                                url.substringAfterLast('/'),
+                            )
+                        },
+                    )
                     .setArtist(artist.ifBlank { "Unknown artist" })
                     .setAlbumTitle(album)
                     .setIsBrowsable(false)
@@ -634,7 +771,9 @@ class FaderMediaService : MediaLibraryService() {
         mediaId.startsWith("folder:") -> {
             val encoded = mediaId.removePrefix("folder:")
             val url = encoded.substringBefore("|")
-            val name = encoded.substringAfter("|", url.trimEnd('/').substringAfterLast('/'))
+            val name = com.fader.mobil.core.RemoteLibrary.decodeName(
+                encoded.substringAfter("|", url.trimEnd('/').substringAfterLast('/')),
+            )
             browse(mediaId, name)
         }
         else -> null
@@ -642,10 +781,38 @@ class FaderMediaService : MediaLibraryService() {
 
     /** Turns a browsed entry into something the engine can actually open. */
     private fun resolve(mediaId: String): MediaItem? {
+        val stub = MediaItem.Builder()
+            .setMediaId(mediaId)
+            .setMediaMetadata(MediaMetadata.Builder().build())
+            .build()
+        return resolve(stub)
+    }
+
+    /** Same, but keeps the container extra so a later setMediaItems expands. */
+    private fun resolve(item: MediaItem): MediaItem? {
+        val mediaId = item.mediaId
         if (!mediaId.startsWith("track:")) return itemForId(mediaId)
         val url = mediaId.removePrefix("track:")
         val art = if (url.startsWith("http")) null else LocalLibrary.art(url)?.uri
-        return FaderPlayer.mediaItemForSession(url, art)
+        val container = SessionItems.containerOf(item) ?: folderContainerFor(url)
+        return FaderPlayer.mediaItemForSession(
+            url,
+            item.mediaMetadata.title?.toString().orEmpty(),
+            item.mediaMetadata.artist?.toString().orEmpty(),
+            item.mediaMetadata.albumTitle?.toString().orEmpty(),
+            art,
+            container,
+        )
+    }
+
+    /** Fallback when the controller dropped the extras: use the file's folder. */
+    private fun folderContainerFor(url: String): String? {
+        val trimmed = url.trimEnd('/')
+        val parent = trimmed.substringBeforeLast('/', "")
+        if (parent.isEmpty()) return null
+        val remote = url.startsWith("http")
+        val name = parent.trimEnd('/').substringAfterLast('/')
+        return "folder|${if (remote) 1 else 0}|$parent/|$name"
     }
 
     private fun hitItem(hit: SearchHit): MediaItem = trackItem(
@@ -733,10 +900,12 @@ class FaderMediaService : MediaLibraryService() {
                     val name = parts[3]
                     if (remote) ensureRemote()
                     if (!remote) loadLocalIfAllowed()
-                    val listing = runCatching {
-                        if (remote) RemoteLibrary.listing(url, name)
-                        else LocalLibrary.listing(url, name)
-                    }.getOrNull() ?: return@withContext emptyList()
+                    val listing = if (remote) {
+                        folderListing(url, name) ?: return@withContext emptyList()
+                    } else {
+                        runCatching { LocalLibrary.listing(url, name) }.getOrNull()
+                            ?: return@withContext emptyList()
+                    }
                     listing.tracks.map { track ->
                         CarTrack(
                             track.url,
@@ -758,7 +927,9 @@ class FaderMediaService : MediaLibraryService() {
 
     private companion object {
         const val EXTRA_CONTAINER = "fader.container"
+        const val EXTRA_DURATION = "fader.durationMs"
         const val CMD_SHUFFLE = "fader.shuffle"
+        const val CMD_REPEAT = "fader.repeat"
         const val CMD_FAVORITE = "fader.favorite"
         const val CONTAINER_FAVORITES = "favorites"
         const val CONTAINER_QUEUE = "queue"

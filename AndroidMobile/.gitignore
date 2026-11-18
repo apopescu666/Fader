@@ -7,3 +7,10 @@ local.properties
 *.iml
 .idea/
 .DS_Store
+# artefacte locale / testare
+*.apk
+*.aab
+APK test/
+tools/
+fader-log*.txt
+release/

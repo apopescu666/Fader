@@ -1,9 +1,11 @@
 package com.fader.mobil.ui.components
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.animation.core.Animatable
@@ -36,16 +38,27 @@ import androidx.compose.material3.Text
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -400,7 +413,7 @@ fun TrackRow(
                 .padding(start = 14.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Artwork(track.art, size = 56.dp, corner = 10.dp, artKey = track.artKey, artUri = track.artUri)
+            Artwork(track.art, size = 56.dp, corner = 10.dp, artKey = track.artKey, artUri = track.artUri, thumb = true)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(
@@ -412,7 +425,13 @@ fun TrackRow(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    if (isCurrent) "Playing · ${track.artist}" else "${track.artist} · ${track.album}",
+                    if (isCurrent) {
+                        "Playing · ${track.artist}"
+                    } else if (track.album.isBlank()) {
+                        track.artist
+                    } else {
+                        "${track.artist} · ${track.album}"
+                    },
                     color = if (isCurrent) Accent.copy(alpha = 0.8f) else TextSecondary,
                     fontSize = 13.sp,
                     maxLines = 1,
@@ -484,7 +503,10 @@ fun MiniPlayer(
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     onOpen: () -> Unit,
+    onSeek: (Float) -> Unit = {},
+    onOpenSource: () -> Unit = {},
 ) {
+    var shownPosition by remember { mutableStateOf(positionMs) }
     Surface(
         color = Surface1.copy(alpha = 0.98f),
         shape = RoundedCornerShape(14.dp),
@@ -498,11 +520,17 @@ fun MiniPlayer(
             Modifier.padding(start = 8.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Artwork(track.art, size = 44.dp, corner = 9.dp, artKey = track.artKey, artUri = track.artUri)
+            Artwork(track.art, size = 44.dp, corner = 9.dp, artKey = track.artKey, artUri = track.artUri, thumb = true)
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Text(track.title, color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text("${track.artist} · ${track.album}", color = TextSecondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    if (track.album.isBlank()) track.artist else "${track.artist} · ${track.album}",
+                    color = TextSecondary,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
             IconButton(
                 onClick = onPrevious,
@@ -531,35 +559,155 @@ fun MiniPlayer(
                 FaderIcon(FIcon.Next, size = 18.dp, tint = TextPrimary)
             }
         }
-        val fraction = if (durationMs > 0) {
-            (positionMs.toFloat() / durationMs).coerceIn(0f, 1f)
-        } else {
-            0f
-        }
+        FaderSeekBar(
+            positionMs = positionMs,
+            durationMs = durationMs,
+            onSeek = onSeek,
+            onPreview = { shownPosition = it },
+            trackHeight = 2.dp,
+            touchHeight = 22.dp,
+            showThumb = false,
+            modifier = Modifier.padding(horizontal = 8.dp),
+        )
         Box(
             Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 8.dp)
-                .height(2.dp)
-                .clip(RoundedCornerShape(1.dp))
-                .background(Surface2),
+                .padding(start = 10.dp, end = 10.dp, top = 0.dp, bottom = 4.dp),
         ) {
-            Box(
-                Modifier
-                    .fillMaxWidth(fraction)
-                    .height(2.dp)
-                    .background(Accent),
+            Text(
+                formatMs(shownPosition.toLong()),
+                color = TextTertiary,
+                fontSize = 10.sp,
+                modifier = Modifier.align(Alignment.CenterStart),
+            )
+            IconButton(
+                onClick = onOpenSource,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .size(26.dp)
+                    .described("Go to the list this song plays from"),
+            ) {
+                FaderIcon(FIcon.Target, size = 14.dp, tint = TextTertiary)
+            }
+            Text(
+                formatMs(durationMs.toLong()),
+                color = TextTertiary,
+                fontSize = 10.sp,
+                modifier = Modifier.align(Alignment.CenterEnd),
             )
         }
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(start = 10.dp, end = 10.dp, top = 2.dp, bottom = 4.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(formatMs(positionMs.toLong()), color = TextTertiary, fontSize = 10.sp)
-            Text(formatMs(durationMs.toLong()), color = TextTertiary, fontSize = 10.sp)
         }
+    }
+}
+
+/**
+ * Draggable progress bar, shared by the player screen and the mini player.
+ *
+ * After a drag is released the chosen position stays on screen until the
+ * engine reports it; otherwise the bar would snap back to the old position for
+ * a moment and then jump to the new one.
+ */
+@Composable
+fun FaderSeekBar(
+    positionMs: Int,
+    durationMs: Int,
+    onSeek: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+    onPreview: ((Int) -> Unit)? = null,
+    trackHeight: Dp = 4.dp,
+    touchHeight: Dp = 30.dp,
+    showThumb: Boolean = true,
+    fillColor: Color = Accent,
+) {
+    var dragging by remember { mutableStateOf(false) }
+    var dragFraction by remember { mutableFloatStateOf(0f) }
+    var pendingMs by remember { mutableStateOf<Int?>(null) }
+
+    val draggedMs = (durationMs * dragFraction).toInt()
+    val shownMs = when {
+        dragging -> draggedMs
+        pendingMs != null -> pendingMs!!
+        else -> positionMs
+    }
+    val shownFraction = if (durationMs > 0) {
+        (shownMs.toFloat() / durationMs).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+
+    LaunchedEffect(shownMs) { onPreview?.invoke(shownMs) }
+    LaunchedEffect(positionMs, pendingMs) {
+        val target = pendingMs ?: return@LaunchedEffect
+        if (kotlin.math.abs(positionMs - target) < 1200) pendingMs = null
+    }
+    LaunchedEffect(pendingMs) {
+        if (pendingMs == null) return@LaunchedEffect
+        kotlinx.coroutines.delay(4000)
+        pendingMs = null
+    }
+
+    Canvas(
+        modifier
+            .fillMaxWidth()
+            .height(touchHeight)
+            .pointerInput(durationMs) {
+                if (durationMs <= 0) return@pointerInput
+                detectHorizontalDragGestures(
+                    onDragStart = { offset ->
+                        dragging = true
+                        dragFraction = (offset.x / size.width).coerceIn(0f, 1f)
+                    },
+                    onHorizontalDrag = { change, _ ->
+                        dragFraction = (change.position.x / size.width).coerceIn(0f, 1f)
+                    },
+                    onDragEnd = {
+                        dragging = false
+                        pendingMs = (durationMs * dragFraction).toInt()
+                        onSeek(dragFraction)
+                    },
+                    onDragCancel = {
+                        dragging = false
+                        pendingMs = null
+                    },
+                )
+            }
+            .pointerInput(durationMs) {
+                if (durationMs <= 0) return@pointerInput
+                detectTapGestures { offset ->
+                    val fraction = (offset.x / size.width).coerceIn(0f, 1f)
+                    pendingMs = (durationMs * fraction).toInt()
+                    onSeek(fraction)
+                }
+            }
+            .semantics {
+                if (durationMs > 0) {
+                    progressBarRangeInfo = ProgressBarRangeInfo(shownFraction, 0f..1f)
+                }
+            },
+    ) {
+        val centerY = size.height / 2f
+        val barHeight = trackHeight.toPx()
+        drawRoundRect(
+            color = Color(0x29FFFFFF),
+            topLeft = Offset(0f, centerY - barHeight / 2f),
+            size = Size(size.width, barHeight),
+            cornerRadius = CornerRadius(barHeight / 2f),
+        )
+        val filled = size.width * shownFraction
+        if (filled > 0f) {
+            drawRoundRect(
+                color = fillColor,
+                topLeft = Offset(0f, centerY - barHeight / 2f),
+                size = Size(filled, barHeight),
+                cornerRadius = CornerRadius(barHeight / 2f),
+            )
+        }
+        if (showThumb && durationMs > 0) {
+            drawCircle(
+                color = Color.White.copy(alpha = 0.95f),
+                radius = 6.dp.toPx(),
+                center = Offset(filled.coerceIn(0f, size.width), centerY),
+            )
         }
     }
 }

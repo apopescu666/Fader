@@ -4,9 +4,13 @@ import android.content.Context
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -46,6 +50,7 @@ object RemoteLibrary {
 
     private val extraction = Semaphore(3)
 
+
     fun init(context: Context) {
         appContext = context.applicationContext
     }
@@ -65,6 +70,14 @@ object RemoteLibrary {
     /** Basic auth header, reused by the artwork loader. */
     val authHeader: String?
         get() = (client as? WebDavClient)?.authHeader()
+
+    /** Connects on a worker thread (ExoPlayer loader); true when ready. */
+    fun ensureConnectedBlocking(context: android.content.Context): Boolean {
+        init(context)
+        if (isConnected) return true
+        val saved = WebDavCredentials.load(context) ?: return false
+        return runBlocking { connect(saved.url, saved.user, saved.password).isSuccess }
+    }
 
     suspend fun connect(url: String, user: String, password: String): Result<Unit> =
         withContext(Dispatchers.IO) {
@@ -88,13 +101,16 @@ object RemoteLibrary {
         lastEntries = library.audio
         library.cover?.url?.let { folderCovers[url] = it }
 
-        val folders = library.folders.map { FolderEntry(it.name, it.url) }
+        val folders = library.folders
+            .filterNot { isSystemFolder(it.name) }
+            .map { FolderEntry(decodeName(it.name), it.url) }
         val tracks = library.audio.map { entry ->
             val parent = entry.url.substringBeforeLast('/', "")
-            val parsed = MetaParser.fromName(entry.name, parent.ifEmpty { entry.url })
+            val displayName = decodeName(entry.name)
+            val parsed = MetaParser.fromName(displayName, parent.ifEmpty { entry.url })
             TrackEntry(
-                name = entry.name,
-                title = if (parsed.nonEmptyTitle()) parsed.title else entry.name.substringBeforeLast('.'),
+                name = displayName,
+                title = if (parsed.nonEmptyTitle()) parsed.title else displayName.substringBeforeLast('.'),
                 artist = if (parsed.nonEmptyArtist()) parsed.artist else "Unknown artist",
                 album = if (parsed.nonEmptyAlbum()) parsed.album else name,
                 durationMs = 0,
@@ -105,6 +121,17 @@ object RemoteLibrary {
         }
         Listing(url, name, folders, tracks, remote = true, coverUrl = library.cover?.url)
     }
+
+    /** WebDAV hrefs are URL-encoded: %20 and friends must not reach the UI. */
+    internal fun decodeName(name: String): String {
+        if (!name.contains('%')) return name
+        return runCatching { java.net.URLDecoder.decode(name, "UTF-8") }.getOrDefault(name)
+    }
+
+    /** NAS housekeeping folders that are not music: #recycle, @eaDir, hidden. */
+    private fun isSystemFolder(name: String): Boolean =
+        name.startsWith("#") || name.equals("@eaDir", ignoreCase = true) ||
+            name.startsWith(".")
 
     suspend fun play(url: String, name: String, index: Int): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
@@ -139,7 +166,7 @@ object RemoteLibrary {
                     hits.add(
                         SearchHit(
                             url = entry.url,
-                            name = entry.name,
+                            name = decodeName(entry.name),
                             folderUrl = folder,
                             folderName = folder.trimEnd('/').substringAfterLast('/'),
                             remote = true,
@@ -285,4 +312,5 @@ object RemoteLibrary {
         trackCovers.clear()
         folderCovers.clear()
     }
+
 }
